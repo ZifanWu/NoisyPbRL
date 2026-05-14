@@ -70,9 +70,9 @@ setup(
     packages=[package for package in find_packages() if package.startswith("stable_baselines3")],
     package_data={"stable_baselines3": ["py.typed", "version.txt"]},
     install_requires=[
-        "gym>=0.17",
-        "numpy",
-        "torch>=1.4.0",
+        "gym==0.26.2",
+        "numpy==1.24.4",
+        "torch>=2.0.0",
         # For saving models
         "cloudpickle",
         # For reading logs

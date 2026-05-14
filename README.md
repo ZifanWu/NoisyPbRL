@@ -14,6 +14,7 @@ pip install -e .[docs,tests,extra]
 
 # Install the local dm_control and gym wrappers
 cd custom_dmc2gym && pip install -e . && cd ..
+cd Metaworld-2.0.0 && pip install -e . && cd ..
 ```
 
 > **Note on MuJoCo:** This repo uses the open-source `mujoco` pip package (3.x) and

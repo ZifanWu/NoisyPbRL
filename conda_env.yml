@@ -13,14 +13,30 @@ dependencies:
   - pyparsing
   - pip
   - pip:
-    - termcolor
-    - mujoco
-    - dm-control
-    - wandb
-    - tb-nightly
-    - imageio
-    - imageio-ffmpeg
+    - termcolor==2.4.0
+    - mujoco==3.2.3
+    - mujoco-py==2.1.2.14
+    - dm-control==1.0.23
+    - wandb==0.24.2
+    - tensorboard==2.14.0
+    - imageio==2.35.1
+    - imageio-ffmpeg==0.5.1
+    # hydra 0.11.3 is only available via git
     - git+https://github.com/facebookresearch/hydra@0.11_branch
-    - matplotlib
+    - matplotlib==3.7.5
     - glfw==1.11.2
-    - scikit-image
+    - scikit-image==0.21.0
+    - scipy==1.10.1
+    - gym==0.26.2
+    - numpy==1.24.4
+
+# MetaWorld must be installed separately (no PyPI release):
+#   Download the Metaworld-2.0.0 archive and run:
+#   pip install -e /path/to/Metaworld-2.0.0
+#
+# This repo (NoisyPbRL) is also installed in editable mode:
+#   pip install -e .
+#
+# gym 0.26 uses the new 5-value step API (terminated, truncated, info).
+# MetaWorld uses the old 4-value API, so utils.py wraps it with
+# gym.wrappers.StepAPICompatibility before passing to TimeLimit.
