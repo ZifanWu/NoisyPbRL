@@ -23,8 +23,6 @@ cd Metaworld-2.0.0 && pip install -e . && cd ..
 > reward numbers will not match the original paper — but algorithm comparisons within
 > this setup are internally consistent.
 
-> **Note on MetaWorld:** `metaworld` is not installed by default. It is only needed
-> for MetaWorld environments (`metaworld_*`). Install it separately if required.
 
 ## Logging
 
