@@ -82,7 +82,8 @@ class Workspace(object):
             while not done:
                 with utils.eval_mode(self.agent):
                     action = self.agent.act(obs, sample=False)
-                obs, reward, done, _, extra = self.env.step(action)
+                obs, reward, terminated, truncated, extra = self.env.step(action)
+                done = terminated or truncated
                 episode_reward += reward
                 if self.log_success:
                     episode_success = max(episode_success, extra['success'])
@@ -169,7 +170,8 @@ class Workspace(object):
                                             gradient_update=1, K=self.cfg.topK)
             
             
-            next_obs, reward, done, _, extra = self.env.step(action)      
+            next_obs, reward, terminated, truncated, extra = self.env.step(action)
+            done = terminated or truncated
             # allow infinite bootstrap
             done = float(done)
             done_no_max = 0 if episode_step + 1 == self.env._max_episode_steps else done

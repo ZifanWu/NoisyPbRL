@@ -49,6 +49,7 @@ if __name__ == "__main__":
     parser.add_argument("--clip-init", help="Initial value of clipping", type=float, default=0.4)
     parser.add_argument("--n-epochs", help="Number of epoch when optimizing the surrogate loss", type=int, default=20)
     parser.add_argument("--normalize", help="Normalization", type=int, default=1)
+    parser.add_argument("--use-wandb", help="Enable wandb logging", action="store_true")
     parser.add_argument("--unsuper-step", help="# of steps for unsupervised learning", type=int, default=32000)
     parser.add_argument("--unsuper-n-epochs", help="# of steps for unsupervised learning", type=int, default=50)
     # reward learning
@@ -187,10 +188,20 @@ if __name__ == "__main__":
         device=f'cuda:{args.gpu}',
         verbose=1)
 
+    if args.use_wandb:
+        import wandb
+        wandb.tensorboard.patch(root_logdir=args.tensorboard_log)
+        wandb.init(
+            project='NoisyPbRL',
+            name=f'{env_name}__prefppo__seed{args.seed}',
+            config=vars(args),
+            sync_tensorboard=True,
+        )
+
     # save args
     with open(os.path.join(args.tensorboard_log, "args.yml"), "w") as f:
         ordered_args = OrderedDict([(key, vars(args)[key]) for key in sorted(vars(args).keys())])
         yaml.dump(ordered_args, f)
-        
+
     model.learn(total_timesteps=args.total_timesteps, unsuper_flag=1)
     model.reward_model.save(args.tensorboard_log, args.total_timesteps)

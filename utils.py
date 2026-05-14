@@ -9,6 +9,7 @@ import dmc2gym
 
 from collections import deque
 from gym.wrappers.time_limit import TimeLimit
+from gym.wrappers import StepAPICompatibility
 from rlkit.envs.wrappers import NormalizedBoxEnv
 from collections import deque
 from skimage.util.shape import view_as_windows
@@ -73,7 +74,7 @@ def make_metaworld_env(cfg):
     env._set_task_called = True
     env.seed(cfg.seed)
     
-    return TimeLimit(NormalizedBoxEnv(env), env.max_path_length)
+    return TimeLimit(StepAPICompatibility(NormalizedBoxEnv(env), output_truncation_bool=True), env.max_path_length)
 
 def ppo_make_metaworld_env(env_id, seed):
     import metaworld
@@ -90,7 +91,7 @@ def ppo_make_metaworld_env(env_id, seed):
     env._set_task_called = True
     env.seed(seed)
     
-    return TimeLimit(env, env.max_path_length)
+    return TimeLimit(StepAPICompatibility(env, output_truncation_bool=True), env.max_path_length)
 
 class eval_mode(object):
     def __init__(self, *models):

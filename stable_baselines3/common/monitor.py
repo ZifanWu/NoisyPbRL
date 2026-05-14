@@ -94,7 +94,12 @@ class Monitor(gym.Wrapper):
         """
         if self.needs_reset:
             raise RuntimeError("Tried to step environment that needs reset")
-        observation, reward, done, info = self.env.step(action)
+        step_result = self.env.step(action)
+        if len(step_result) == 5:
+            observation, reward, terminated, truncated, info = step_result
+            done = terminated or truncated
+        else:
+            observation, reward, done, info = step_result
         self.rewards.append(reward)
         if done:
             self.needs_reset = True
@@ -236,7 +241,12 @@ class MetaWorldMonitor(gym.Wrapper):
         """
         if self.needs_reset:
             raise RuntimeError("Tried to step environment that needs reset")
-        observation, reward, done, info = self.env.step(action)
+        step_result = self.env.step(action)
+        if len(step_result) == 5:
+            observation, reward, terminated, truncated, info = step_result
+            done = terminated or truncated
+        else:
+            observation, reward, done, info = step_result
         self.rewards.append(reward)
         self.episode_success = max(self.episode_success, info['success'])
         

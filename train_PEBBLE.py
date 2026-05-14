@@ -25,9 +25,19 @@ class Workspace(object):
         print(f'workspace: {self.work_dir}')
 
         self.cfg = cfg
+
+        if cfg.use_wandb:
+            import wandb
+            wandb.init(
+                project='NoisyPbRL',
+                name=f'{cfg.env}__{cfg.agent.name}__seed{cfg.seed}',
+                config=dict(cfg),
+            )
+
         self.logger = Logger(
             self.work_dir,
             save_tb=cfg.log_save_tb,
+            use_wandb=cfg.use_wandb,
             log_frequency=cfg.log_frequency,
             agent=cfg.agent.name)
 

@@ -40,6 +40,7 @@ device: cuda
 # logger
 log_frequency: 10000
 log_save_tb: true
+use_wandb: false
 
 # video recorder
 save_video: false

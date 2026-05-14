@@ -25,7 +25,7 @@ reset_update: 100
 # logger
 log_frequency: 10000
 log_save_tb: false
-use_wandb: true
+use_wandb: false
 
 # video recorder
 save_video: false
