@@ -50,6 +50,7 @@ if __name__ == "__main__":
     parser.add_argument("--normalize", help="Normalization", type=int, default=1)
     parser.add_argument("--unsuper-step", help="# of steps for unsupervised learning", type=int, default=32000)
     parser.add_argument("--unsuper-n-epochs", help="# of steps for unsupervised learning", type=int, default=50)
+    parser.add_argument("--gpu", help="GPU index to use", type=int, default=0)
     args = parser.parse_args()
     
     metaworld_flag = False
@@ -136,6 +137,7 @@ if __name__ == "__main__":
         unsuper_n_epochs=args.unsuper_n_epochs,
         size_segment=0,
         max_ep_len=max_ep_len,
+        device=f'cuda:{args.gpu}',
         verbose=1)
 
     # save args

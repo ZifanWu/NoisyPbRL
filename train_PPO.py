@@ -47,7 +47,8 @@ if __name__ == "__main__":
     parser.add_argument("--gae-lambda", help="Factor for trade-off of bias vs variance", type=float, default=0.92)
     parser.add_argument("--clip-init", help="Initial value of clipping", type=float, default=0.4)
     parser.add_argument("--n-epochs", help="Number of epoch when optimizing the surrogate loss", type=int, default=20)
-    parser.add_argument("--normalize", help="Normalization", type=int, default=1)    
+    parser.add_argument("--normalize", help="Normalization", type=int, default=1)
+    parser.add_argument("--gpu", help="GPU index to use", type=int, default=0)
     args = parser.parse_args()
     
     metaworld_flag = False
@@ -120,6 +121,7 @@ if __name__ == "__main__":
         clip_range=clip_range,
         n_epochs=args.n_epochs,
         metaworld_flag=metaworld_flag,
+        device=f'cuda:{args.gpu}',
         verbose=1)
 
     # save args

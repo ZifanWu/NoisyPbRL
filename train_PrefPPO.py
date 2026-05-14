@@ -67,6 +67,7 @@ if __name__ == "__main__":
     parser.add_argument("--teacher-eps-mistake", type=float, default=0.0)
     parser.add_argument("--teacher-eps-skip", type=float, default=0.0)
     parser.add_argument("--teacher-eps-equal", type=float, default=0.0)
+    parser.add_argument("--gpu", help="GPU index to use", type=int, default=0)
     args = parser.parse_args()
     
     metaworld_flag = False
@@ -183,6 +184,7 @@ if __name__ == "__main__":
         unsuper_n_epochs=args.unsuper_n_epochs,
         size_segment=args.re_segment,
         max_ep_len=max_ep_len,
+        device=f'cuda:{args.gpu}',
         verbose=1)
 
     # save args
