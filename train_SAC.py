@@ -20,8 +20,18 @@ class Workspace(object):
         self.work_dir = os.getcwd()
         print(f'workspace: {self.work_dir}')
         self.cfg = cfg
+
+        if cfg.use_wandb:
+            import wandb
+            wandb.init(
+                project='NoisyPbRL',
+                name=f'{cfg.env}__{cfg.agent.name}__seed{cfg.seed}',
+                config=dict(cfg),
+            )
+
         self.logger = Logger(self.work_dir,
                              save_tb=cfg.log_save_tb,
+                             use_wandb=cfg.use_wandb,
                              log_frequency=cfg.log_frequency,
                              agent=cfg.agent.name)
 
@@ -72,7 +82,7 @@ class Workspace(object):
             while not done:
                 with utils.eval_mode(self.agent):
                     action = self.agent.act(obs, sample=False)
-                obs, reward, done, extra = self.env.step(action)
+                obs, reward, done, _, extra = self.env.step(action)
                 episode_reward += reward
                 if self.log_success:
                     episode_success = max(episode_success, extra['success'])
@@ -159,7 +169,7 @@ class Workspace(object):
                                             gradient_update=1, K=self.cfg.topK)
             
             
-            next_obs, reward, done, extra = self.env.step(action)      
+            next_obs, reward, done, _, extra = self.env.step(action)      
             # allow infinite bootstrap
             done = float(done)
             done_no_max = 0 if episode_step + 1 == self.env._max_episode_steps else done

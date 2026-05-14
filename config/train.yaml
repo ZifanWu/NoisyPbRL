@@ -6,7 +6,8 @@ env: dog_stand
 
 # Basic setup
 experiment: sac
-device: cuda
+gpu: 0
+device: cuda:${gpu}
 seed: 1
 
 # training 
@@ -23,7 +24,8 @@ reset_update: 100
 
 # logger
 log_frequency: 10000
-log_save_tb: true
+log_save_tb: false
+use_wandb: true
 
 # video recorder
 save_video: false

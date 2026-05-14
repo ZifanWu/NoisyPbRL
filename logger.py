@@ -12,7 +12,7 @@ COMMON_TRAIN_FORMAT = [
     ('episode', 'E', 'int'),
     ('step', 'S', 'int'),
     ('episode_reward', 'R', 'float'),
-    ('true_episode_reward', 'TR', 'float'), 
+    ('true_episode_reward', 'TR', 'float'),
     ('total_feedback', 'TF', 'int'),
     ('labeled_feedback', 'LR', 'int'),
     ('noisy_feedback', 'NR', 'int'),
@@ -116,23 +116,26 @@ class MetersGroup(object):
 
     def dump(self, step, prefix, save=True):
         if len(self._meters) == 0:
-            return
+            return {}
+        data = self._prime_meters()
         if save:
-            data = self._prime_meters()
             data['step'] = step
             self._dump_to_csv(data)
             self._dump_to_console(data, prefix)
         self._meters.clear()
+        return data
 
 
 class Logger(object):
     def __init__(self,
                  log_dir,
                  save_tb=False,
+                 use_wandb=False,
                  log_frequency=10000,
                  agent='sac'):
         self._log_dir = log_dir
         self._log_frequency = log_frequency
+        self._use_wandb = use_wandb
         if save_tb:
             tb_dir = os.path.join(log_dir, 'tb')
             if os.path.exists(tb_dir):
@@ -205,11 +208,25 @@ class Logger(object):
 
     def dump(self, step, save=True, ty=None):
         if ty is None:
-            self._train_mg.dump(step, 'train', save)
-            self._eval_mg.dump(step, 'eval', save)
+            train_data = self._train_mg.dump(step, 'train', save)
+            eval_data = self._eval_mg.dump(step, 'eval', save)
         elif ty == 'eval':
-            self._eval_mg.dump(step, 'eval', save)
+            train_data = {}
+            eval_data = self._eval_mg.dump(step, 'eval', save)
         elif ty == 'train':
-            self._train_mg.dump(step, 'train', save)
+            train_data = self._train_mg.dump(step, 'train', save)
+            eval_data = {}
         else:
             raise f'invalid log type: {ty}'
+
+        if self._use_wandb and save:
+            import wandb
+            wandb_data = {}
+            for k, v in train_data.items():
+                if k != 'step':
+                    wandb_data[f'train/{k}'] = v
+            for k, v in eval_data.items():
+                if k != 'step':
+                    wandb_data[f'eval/{k}'] = v
+            if wandb_data:
+                wandb.log(wandb_data, step=step)

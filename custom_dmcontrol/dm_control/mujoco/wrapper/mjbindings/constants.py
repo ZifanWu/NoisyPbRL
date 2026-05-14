@@ -70,6 +70,6 @@ mjMAXLINE = 100
 mjMAXLINEPNT = 1000
 mjMAXPLANEGRID = 200
 MJAPI = True
-mjVERSION_HEADER = 200
+mjVERSION_HEADER = 210
 
 # ----------------------------End of generated code----------------------------

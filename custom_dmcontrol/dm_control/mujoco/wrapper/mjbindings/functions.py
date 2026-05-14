@@ -42,47 +42,6 @@ Deactivate license, free memory.
 mjlib.mj_deactivate.argtypes = None
 mjlib.mj_deactivate.restype = None
 
-mjlib.mj_certQuestion.__doc__ = """
-Server side: generate certificate question.
-
-Args:
-  question: util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W'))
-"""
-mjlib.mj_certQuestion.argtypes = [
-    util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')),
-]
-mjlib.mj_certQuestion.restype = None
-
-mjlib.mj_certAnswer.__doc__ = """
-Client side: generate certificate answer given question.
-
-Args:
-  question: util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')) <const>
-  answer: util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W'))
-"""
-mjlib.mj_certAnswer.argtypes = [
-    util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')),
-    util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')),
-]
-mjlib.mj_certAnswer.restype = None
-
-mjlib.mj_certCheck.__doc__ = """
-Server side: check certificate question-answer pair; return 1 if match, 0 if
-mismatch.
-
-Args:
-  question: util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')) <const>
-  answer: util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')) <const>
-
-Returns:
-  ctypes.c_int
-"""
-mjlib.mj_certCheck.argtypes = [
-    util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')),
-    util.ndptr(shape=(16,), dtype=np.float64, flags=('C', 'W')),
-]
-mjlib.mj_certCheck.restype = ctypes.c_int
-
 mjlib.mj_defaultVFS.__doc__ = """
 Initialize VFS to empty (no deallocation).
 
