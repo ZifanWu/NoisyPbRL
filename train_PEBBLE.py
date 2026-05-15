@@ -69,6 +69,7 @@ class Workspace(object):
         # for logging
         self.total_feedback = 0
         self.labeled_feedback = 0
+        self.noisy_feedback = 0
         self.step = 0
 
         # instantiating the reward model
@@ -77,16 +78,22 @@ class Workspace(object):
             self.env.action_space.shape[0],
             ensemble_size=cfg.ensemble_size,
             size_segment=cfg.segment,
-            activation=cfg.activation, 
+            activation=cfg.activation,
             lr=cfg.reward_lr,
-            mb_size=cfg.reward_batch, 
-            large_batch=cfg.large_batch, 
-            label_margin=cfg.label_margin, 
-            teacher_beta=cfg.teacher_beta, 
-            teacher_gamma=cfg.teacher_gamma, 
-            teacher_eps_mistake=cfg.teacher_eps_mistake, 
-            teacher_eps_skip=cfg.teacher_eps_skip, 
-            teacher_eps_equal=cfg.teacher_eps_equal)
+            mb_size=cfg.reward_batch,
+            large_batch=cfg.large_batch,
+            label_margin=cfg.label_margin,
+            teacher_beta=cfg.teacher_beta,
+            teacher_gamma=cfg.teacher_gamma,
+            teacher_eps_mistake=cfg.teacher_eps_mistake,
+            teacher_eps_skip=cfg.teacher_eps_skip,
+            teacher_eps_equal=cfg.teacher_eps_equal,
+            dormant_log_period=cfg.dormant_log_period,
+            dormant_threshold=cfg.dormant_threshold,
+            use_wandb=cfg.use_wandb,
+            bt_log_period=cfg.bt_log_period,
+            feed_type=cfg.feed_type,
+            capacity=cfg.max_feedback * cfg.large_batch)
         
     def evaluate(self):
         average_episode_reward = 0
@@ -105,7 +112,8 @@ class Workspace(object):
             while not done:
                 with utils.eval_mode(self.agent):
                     action = self.agent.act(obs, sample=False)
-                obs, reward, done, extra = self.env.step(action)
+                obs, reward, terminated, truncated, extra = self.env.step(action)
+                done = terminated or truncated
                 
                 episode_reward += reward
                 true_episode_reward += reward
@@ -174,6 +182,7 @@ class Workspace(object):
                     break;
                     
         print("Reward function is updated!! ACC: " + str(total_acc))
+        self.logger.log('train/reward_model_acc', total_acc, self.step)
 
     def run(self):
         episode, episode_reward, done = 0, 0, True
@@ -201,8 +210,9 @@ class Workspace(object):
                 
                 self.logger.log('train/episode_reward', episode_reward, self.step)
                 self.logger.log('train/true_episode_reward', true_episode_reward, self.step)
-                self.logger.log('train/total_feedback', self.total_feedback, self.step)
-                self.logger.log('train/labeled_feedback', self.labeled_feedback, self.step)
+                # self.logger.log('train/total_feedback', self.total_feedback, self.step)
+                # self.logger.log('train/labeled_feedback', self.labeled_feedback, self.step)
+                # self.logger.log('train/noisy_feedback', self.noisy_feedback, self.step)
                 
                 if self.log_success:
                     self.logger.log('train/episode_success', episode_success,
@@ -249,8 +259,9 @@ class Workspace(object):
                 self.reward_model.set_teacher_thres_equal(new_margin)
                 
                 # first learn reward
+                self.reward_model.env_step = self.step
                 self.learn_reward(first_flag=1)
-                
+                self.reward_model.pre_relabel_logging(self.step)
                 # relabel buffer
                 self.replay_buffer.relabel_with_predictor(self.reward_model)
                 
@@ -289,7 +300,9 @@ class Workspace(object):
                         if self.reward_model.mb_size + self.total_feedback > self.cfg.max_feedback:
                             self.reward_model.set_batch(self.cfg.max_feedback - self.total_feedback)
                             
+                        self.reward_model.env_step = self.step
                         self.learn_reward()
+                        self.reward_model.pre_relabel_logging(self.step)
                         self.replay_buffer.relabel_with_predictor(self.reward_model)
                         interact_count = 0
                         
@@ -300,12 +313,13 @@ class Workspace(object):
                 self.agent.update_state_ent(self.replay_buffer, self.logger, self.step, 
                                             gradient_update=1, K=self.cfg.topK)
                 
-            next_obs, reward, done, extra = self.env.step(action)
+            next_obs, reward, terminated, truncated, extra = self.env.step(action)
             reward_hat = self.reward_model.r_hat(np.concatenate([obs, action], axis=-1))
 
             # allow infinite bootstrap
+            done = terminated or truncated
             done = float(done)
-            done_no_max = 0 if episode_step + 1 == self.env._max_episode_steps else done
+            done_no_max = 0 if truncated and not terminated else done
             episode_reward += reward_hat
             true_episode_reward += reward
             

@@ -29,6 +29,8 @@ double_q_critic:
     action_dim: ${agent.params.action_dim}
     hidden_dim: 256
     hidden_depth: 3
+    dormant_log_period: ${dormant_log_period}
+    dormant_threshold: ${dormant_threshold}
     
 diag_gaussian_actor:
   class: agent.actor.DiagGaussianActor

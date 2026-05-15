@@ -22,6 +22,10 @@ num_unsup_steps: 0
 topK: 5
 reset_update: 100
 
+# dormant neuron tracking
+dormant_log_period: 5000
+dormant_threshold: 0.1
+
 # logger
 log_frequency: 10000
 log_save_tb: false

@@ -37,6 +37,13 @@ eval_frequency: 10000
 num_eval_episodes: 10
 device: cuda
 
+# dormant neuron tracking
+dormant_log_period: 5000
+dormant_threshold: 0.1
+
+# BT weight / gradient norm logging
+bt_log_period: 5000
+
 # logger
 log_frequency: 10000
 log_save_tb: true

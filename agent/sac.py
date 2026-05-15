@@ -155,7 +155,8 @@ class SACAgent(Agent):
         critic_loss.backward()
         self.critic_optimizer.step()
         self.critic.log(logger, step)
-        
+        self.critic.log_dormant_stats(obs, action, env_step=step)
+
     def update_critic_state_ent(
         self, obs, full_obs, action, next_obs, not_done, logger,
         step, K=5, print_flag=True):
@@ -201,7 +202,8 @@ class SACAgent(Agent):
         self.critic_optimizer.step()
 
         self.critic.log(logger, step)
-    
+        self.critic.log_dormant_stats(obs, action, env_step=step)
+
     def save(self, model_dir, step):
         torch.save(
             self.actor.state_dict(), '%s/actor_%s.pt' % (model_dir, step)

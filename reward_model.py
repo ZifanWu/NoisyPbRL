@@ -82,14 +82,19 @@ def compute_smallest_dist(obs, full_obs):
     return total_dists.unsqueeze(1)
 
 class RewardModel:
-    def __init__(self, ds, da, 
-                 ensemble_size=3, lr=3e-4, mb_size = 128, size_segment=1, 
-                 env_maker=None, max_size=100, activation='tanh', capacity=5e5,  
-                 large_batch=1, label_margin=0.0, 
-                 teacher_beta=-1, teacher_gamma=1, 
-                 teacher_eps_mistake=0, 
-                 teacher_eps_skip=0, 
-                 teacher_eps_equal=0):
+    def __init__(self, ds, da,
+                 ensemble_size=3, lr=3e-4, mb_size = 128, size_segment=1,
+                 env_maker=None, max_size=100, activation='tanh', capacity=5e5,
+                 large_batch=1, label_margin=0.0,
+                 teacher_beta=-1, teacher_gamma=1,
+                 teacher_eps_mistake=0,
+                 teacher_eps_skip=0,
+                 teacher_eps_equal=0,
+                 dormant_log_period=5000,
+                 dormant_threshold=0.1,
+                 use_wandb=False,
+                 bt_log_period=5000,
+                 feed_type=0):
         
         # train data is trajectories, must process to sa and s..   
         self.ds = ds
@@ -138,7 +143,259 @@ class RewardModel:
         
         self.label_margin = label_margin
         self.label_target = 1 - 2*self.label_margin
+
+        self.dormant_log_period = dormant_log_period
+        self.dormant_threshold = dormant_threshold
+        self.use_wandb = use_wandb
+        self.reward_grad_steps = 0
+        self.env_step = 0
+        self.prev_dormant_sets = [None] * self.de
+        self.bt_log_period = bt_log_period
+        self.feed_type = feed_type
+        self._weight_update_ratios = {'penultimate': [], 'final': []}
     
+    @staticmethod
+    def _get_penultimate_activations(model, x):
+        last_hidden_act = None
+        for layer in model:
+            x = layer(x)
+            if isinstance(layer, nn.LeakyReLU):
+                last_hidden_act = x
+        return last_hidden_act
+
+    def _sample_batch_for_dormant(self, batch_size=512):
+        max_len = self.capacity if self.buffer_full else self.buffer_index
+        if max_len == 0:
+            return None
+        flat = self.buffer_seg1[:max_len].reshape(-1, self.ds + self.da)
+        n = len(flat)
+        idxs = np.random.choice(n, size=min(batch_size, n), replace=False)
+        return torch.from_numpy(flat[idxs]).float().to(device)
+
+    def log_dormant_neurons(self):
+        if not self.use_wandb:
+            return
+        import wandb
+        if wandb.run is None:
+            return
+        batch = self._sample_batch_for_dormant(batch_size=512)
+        if batch is None:
+            return
+
+        log_data = {}
+        with torch.no_grad():
+            for member in range(self.de):
+                acts = self._get_penultimate_activations(self.ensemble[member], batch)
+                if acts is None:
+                    continue
+                mean_abs_acts = acts.abs().mean(dim=0)
+                avg_mean_act = mean_abs_acts.mean()
+                if avg_mean_act == 0:
+                    dormant_set = set(range(acts.shape[1]))
+                else:
+                    dormant_set = set(
+                        (mean_abs_acts < self.dormant_threshold * avg_mean_act)
+                        .nonzero(as_tuple=False).squeeze(1).tolist()
+                    )
+                n_neurons = acts.shape[1]
+                dormant_rate = len(dormant_set) / n_neurons
+
+                prev_set = self.prev_dormant_sets[member]
+                if prev_set is None or len(dormant_set) == 0:
+                    overlap_rate = 0.0
+                else:
+                    overlap_rate = len(dormant_set & prev_set) / len(dormant_set)
+                self.prev_dormant_sets[member] = dormant_set
+
+                n_batch = acts.size(0)
+                F = acts / (n_batch ** 0.5)
+                S = torch.linalg.svdvals(F)
+                feature_rank = (S > 0.01).sum().item()
+
+                log_data[f'reward_model/dormant_rate_m{member}'] = dormant_rate
+                log_data[f'reward_model/dormant_overlap_rate_m{member}'] = overlap_rate
+                log_data[f'reward_model/feature_rank_m{member}'] = feature_rank
+
+        wandb.log(log_data, step=self.env_step)
+
+    def _sample_pref_batch(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.train_batch_size
+        max_len = self.capacity if self.buffer_full else self.buffer_index
+        if max_len == 0:
+            return None, None, None
+        idxs = np.random.choice(max_len, size=min(batch_size, max_len), replace=False)
+        return (
+            self.buffer_seg1[idxs],
+            self.buffer_seg2[idxs],
+            self.buffer_label[idxs].flatten(),
+        )
+
+    _FEED_TYPE_NAMES = {
+        0: 'uniform', 1: 'disagreement', 2: 'entropy',
+        3: 'kcenter', 4: 'kcenter+disagree', 5: 'kcenter+entropy',
+    }
+
+    def _sample_pref_batch_by_scheme(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.train_batch_size
+        max_len = self.capacity if self.buffer_full else self.buffer_index
+        if max_len == 0:
+            return None, None, None
+        n = min(batch_size, max_len)
+        seg1 = self.buffer_seg1[:max_len]
+        seg2 = self.buffer_seg2[:max_len]
+        if self.feed_type == 1:
+            _, scores = self.get_rank_probability(seg1, seg2)
+            idxs = (-scores).argsort()[:n]
+        elif self.feed_type == 2:
+            scores, _ = self.get_entropy(seg1, seg2)
+            idxs = (-scores).argsort()[:n]
+        else:
+            idxs = np.random.choice(max_len, size=n, replace=False)
+        return (
+            self.buffer_seg1[idxs],
+            self.buffer_seg2[idxs],
+            self.buffer_label[idxs].flatten(),
+        )
+
+    def _batch_scheme_title(self):
+        name = self._FEED_TYPE_NAMES.get(self.feed_type, str(self.feed_type))
+        return f'{name} batch'
+
+    def _compute_bt_weights(self, sa_t_1, sa_t_2, labels, batch_size=512):
+        # labels: float32 numpy array with values in {-1.0, 0.0, 1.0}
+        valid_mask = labels != -1
+        if valid_mask.sum() == 0:
+            return np.array([])
+        sa_t_1_v = sa_t_1[valid_mask]
+        sa_t_2_v = sa_t_2[valid_mask]
+        labels_v = labels[valid_mask]
+        n = len(labels_v)
+
+        all_weights = []
+        with torch.no_grad():
+            for start in range(0, n, batch_size):
+                end = min(start + batch_size, n)
+                s1_b = sa_t_1_v[start:end]
+                s2_b = sa_t_2_v[start:end]
+                l_t = torch.from_numpy(labels_v[start:end]).float().to(device)
+                member_weights = []
+                for member in range(self.de):
+                    r1 = self.r_hat_member(s1_b, member=member).sum(axis=1)
+                    r2 = self.r_hat_member(s2_b, member=member).sum(axis=1)
+                    # win=seg2 when label=1, win=seg1 when label=0
+                    diff = torch.where(
+                        l_t.unsqueeze(-1) == 1, r2 - r1, r1 - r2
+                    ).squeeze(-1)
+                    member_weights.append((1.0 - torch.sigmoid(diff)).cpu().numpy())
+                all_weights.append(np.mean(member_weights, axis=0))
+        return np.concatenate(all_weights)
+
+    def _log_bt_metrics(self, tag, step, sa_t_1, sa_t_2, labels, title_desc=None):
+        import wandb
+        bt_weights = self._compute_bt_weights(sa_t_1, sa_t_2, labels)
+        if len(bt_weights) == 0:
+            return
+        if title_desc is None:
+            title_desc = tag
+
+        log_data = {}
+        for eps in [0.01, 0.05, 0.1]:
+            log_data[f'reward_model/bt_saturation_rate{eps}_{tag}'] = float((bt_weights < eps).mean())
+        wandb.log(log_data, step=step)
+
+        counts, bin_edges = np.histogram(bt_weights, bins=100, range=(0.0, 1.0))
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        data = [[float(bc), int(c)] for bc, c in zip(bin_centers, counts)]
+        table = wandb.Table(data=data, columns=['bt_weight', 'count'])
+        wandb.log(
+            {f'reward_model/bt_weight_hist_{tag}_step{step}': wandb.plot.line(
+                table, 'bt_weight', 'count',
+                title=f'BT Weight Histogram ({title_desc}, env_step={step})',
+            )},
+            step=step,
+        )
+
+    def log_batch_bt_and_grad_norm(self):
+        if not self.use_wandb:
+            return
+        import wandb
+        if wandb.run is None:
+            return
+
+        sa_t_1, sa_t_2, labels = self._sample_pref_batch_by_scheme()
+        if sa_t_1 is None:
+            return
+
+        self._log_bt_metrics('batch', self.env_step, sa_t_1, sa_t_2, labels,
+                             title_desc=self._batch_scheme_title())
+
+        valid_mask = labels != -1
+        if valid_mask.sum() == 0:
+            return
+        sa_t_1_v = sa_t_1[valid_mask]
+        sa_t_2_v = sa_t_2[valid_mask]
+        labels_v = torch.from_numpy(labels[valid_mask]).long().to(device)
+
+        self.opt.zero_grad()
+        loss = 0.0
+        for member in range(self.de):
+            r_hat1 = self.r_hat_member(sa_t_1_v, member=member).sum(axis=1)
+            r_hat2 = self.r_hat_member(sa_t_2_v, member=member).sum(axis=1)
+            r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
+            loss += self.CEloss(r_hat, labels_v)
+        loss.backward()
+
+        log_data = {}
+        member_norms = []
+        for member in range(self.de):
+            norm_sq = sum(
+                p.grad.data.norm(2).item() ** 2
+                for p in self.ensemble[member].parameters()
+                if p.grad is not None
+            )
+            norm = norm_sq ** 0.5
+            member_norms.append(norm)
+            log_data[f'reward_model/grad_norm_m{member}'] = norm
+        log_data['reward_model/grad_norm_avg'] = float(np.mean(member_norms))
+        wandb.log(log_data, step=self.env_step)
+        self.opt.zero_grad()
+
+    def log_buffer_bt_metrics(self, step):
+        if not self.use_wandb:
+            return
+        import wandb
+        if wandb.run is None:
+            return
+        max_len = self.capacity if self.buffer_full else self.buffer_index
+        if max_len == 0:
+            return
+        sa_t_1 = self.buffer_seg1[:max_len]
+        sa_t_2 = self.buffer_seg2[:max_len]
+        labels = self.buffer_label[:max_len].flatten()
+        self._log_bt_metrics('buffer', step, sa_t_1, sa_t_2, labels,
+                             title_desc='full preference buffer')
+
+    def flush_weight_update_ratios(self, step):
+        if self.use_wandb:
+            import wandb
+            if wandb.run is not None:
+                log_data = {}
+                for layer_name in ['penultimate', 'final']:
+                    ratios = self._weight_update_ratios[layer_name]
+                    if ratios:
+                        log_data[f'reward_model/weight_update_ratio_{layer_name}'] = float(np.median(ratios))
+                if log_data:
+                    wandb.log(log_data, step=step)
+        self._weight_update_ratios = {'penultimate': [], 'final': []}
+
+    def pre_relabel_logging(self, step):
+        self.log_buffer_bt_metrics(step)
+        self.flush_weight_update_ratios(step)
+        self.log_dormant_neurons()
+        self.log_batch_bt_and_grad_norm()
+
     def softXEnt_loss(self, input, target):
         logprobs = torch.nn.functional.log_softmax (input, dim = 1)
         return  -(target * logprobs).sum() / input.shape[0]
@@ -648,13 +905,30 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
+            if self.use_wandb:
+                old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
+                old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
-        
+            if self.use_wandb:
+                for member in range(self.de):
+                    for layer_name, old_w, idx in [
+                        ('penultimate', old_penultimate[member], -4),
+                        ('final', old_final[member], -2),
+                    ]:
+                        new_w = self.ensemble[member][idx].weight.data
+                        ratio = ((new_w - old_w).norm('fro') / (old_w.norm('fro') + 1e-8)).item()
+                        self._weight_update_ratios[layer_name].append(ratio)
+            self.reward_grad_steps += 1
+            if self.reward_grad_steps % self.dormant_log_period == 0:
+                self.log_dormant_neurons()
+            if self.reward_grad_steps % self.bt_log_period == 0:
+                self.log_batch_bt_and_grad_norm()
+
         ensemble_acc = ensemble_acc / total
-        
+
         return ensemble_acc
-    
+
     def train_soft_reward(self):
         ensemble_losses = [[] for _ in range(self.de)]
         ensemble_acc = np.array([0 for _ in range(self.de)])
@@ -711,9 +985,26 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
+            if self.use_wandb:
+                old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
+                old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
-        
+            if self.use_wandb:
+                for member in range(self.de):
+                    for layer_name, old_w, idx in [
+                        ('penultimate', old_penultimate[member], -4),
+                        ('final', old_final[member], -2),
+                    ]:
+                        new_w = self.ensemble[member][idx].weight.data
+                        ratio = ((new_w - old_w).norm('fro') / (old_w.norm('fro') + 1e-8)).item()
+                        self._weight_update_ratios[layer_name].append(ratio)
+            self.reward_grad_steps += 1
+            if self.reward_grad_steps % self.dormant_log_period == 0:
+                self.log_dormant_neurons()
+            if self.reward_grad_steps % self.bt_log_period == 0:
+                self.log_batch_bt_and_grad_norm()
+
         ensemble_acc = ensemble_acc / total
-        
+
         return ensemble_acc
