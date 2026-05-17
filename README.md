@@ -110,6 +110,88 @@ In B-Pref, we tried the following teachers:
 ./scripts/[env_name]/[teacher_type]/[max_budget]/run_PrefPPO.sh [sampling_scheme: 0=uniform, 1=disagreement, 2=entropy]
 ```
 
+### Static SAC
+
+```bash
+./scripts/[env_name]/[max_budget]/[teacher_type]/run_static_SAC.sh [gpu_id]
+```
+
+`run_static_SAC.sh` does not take a `sampling_scheme` argument because the reward
+model is always trained offline with uniform sampling.
+
+## Static SAC — three-phase offline-then-online pipeline
+
+`train_static_sac.py` implements a decoupled baseline for preference-based RL:
+
+1. **Phase 1 — Data collection (SAC with ground-truth rewards)**  
+   Runs a standard SAC agent with true environment rewards for `num_train_steps`
+   steps and records every completed episode as a raw trajectory (observation–action
+   concatenations and true rewards, one array per episode).  
+   The trajectory pool is cached at:
+
+   ```text
+   trajectory_cache/{env}/seed{seed}/trajectories.pkl
+   ```
+
+   The cache key is `(env, seed)` only — teacher parameters do not affect data
+   collection, so re-running with a different teacher reuses the same trajectories
+   automatically without re-running Phase 1.
+
+2. **Phase 2 — Offline reward-model training**  
+   Loads the cached trajectory pool into the reward model, generates `max_feedback`
+   labelled preference pairs in one shot using uniform sampling, then trains the
+   ensemble reward model.  
+   Stopping criterion (same as each PEBBLE round): up to `reward_update` epochs,
+   early-stop when accuracy exceeds 0.97.  
+   The reward model is **fixed** after this phase — no further updates.  
+   Teacher behavior (rational / noisy / myopic / skip / mistake / equal) is
+   determined by the same `teacher_*` parameters as PEBBLE.
+
+3. **Phase 3 — Online policy training with fixed reward model**  
+   Initialises a fresh SAC agent and an empty replay buffer, then interacts with
+   the environment using the fixed reward model's predicted rewards in place of
+   true rewards.  Logs both `train/episode_reward` (RM-predicted) and
+   `train/true_episode_reward` (ground-truth) for comparison.
+
+### Configuration
+
+The config file is `config/train_static_sac.yaml`.  Key parameters beyond the
+shared SAC/teacher ones:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `rm_log_interval` | `5000` | Log RM metrics (dormant rate, feature rank, BT weights) every this many gradient steps during Phase 2 |
+| `traj_cache_dir` | `trajectory_cache` | Root directory for trajectory caches, relative to the project root |
+| `max_feedback` | `1400` | Number of preference pairs generated for offline RM training |
+
+### Running a single experiment
+
+```bash
+# quadruped_walk, noisy teacher, 2000 feedback pairs, GPU 1
+seed=12345 python train_static_sac.py \
+    use_wandb=true gpu=1 \
+    env=quadruped_walk seed=$seed \
+    agent.params.actor_lr=0.0001 agent.params.critic_lr=0.0001 \
+    gradient_update=1 activation=tanh \
+    num_unsup_steps=9000 num_train_steps=1000000 \
+    max_feedback=2000 reward_batch=200 reward_update=50 \
+    teacher_beta=1 teacher_gamma=1 \
+    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0
+```
+
+### Script directory layout
+
+```text
+scripts/
+  {quadruped_walk, button_press, sweep_into}/
+    {1000|2000, 10000|20000}/          ← max_feedback budget
+      {oracle, noisy, myopic, skip, mistake, equal}/
+        run_static_SAC.sh
+```
+
+Feedback budgets and per-environment hyper-parameters match those of the
+corresponding PEBBLE scripts.
+
 ## Dependency versions (tested)
 
 | Package | Version |

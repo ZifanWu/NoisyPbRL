@@ -1,0 +1,65 @@
+defaults:
+    - agent: sac
+
+experiment: static_sac
+
+# reward model architecture & training
+segment: 50
+activation: tanh
+ensemble_size: 3
+reward_lr: 0.0003
+reward_batch: 128
+reward_update: 200
+large_batch: 10
+label_margin: 0.0
+
+# teacher / preference label parameters
+teacher_beta: -1
+teacher_gamma: 1
+teacher_eps_mistake: 0
+teacher_eps_skip: 0
+teacher_eps_equal: 0
+
+# feedback budget (controls how many preference pairs are generated offline)
+max_feedback: 1400
+
+# static-SAC specific
+rm_log_interval: 5000       # log RM metrics every this many gradient steps
+traj_cache_dir: trajectory_cache  # relative to project root
+
+# environment interaction
+gradient_update: 1
+num_train_steps: 1e6
+replay_buffer_capacity: ${num_train_steps}
+num_seed_steps: 1000
+num_unsup_steps: 0          # collection phase uses pure SAC (no unsupervised)
+topK: 5
+reset_update: 100
+
+# evaluation
+eval_frequency: 10000
+num_eval_episodes: 10
+
+# hardware
+gpu: 0
+device: cuda:${gpu}
+
+# dormant neuron / BT weight logging periods (wired to rm_log_interval)
+dormant_log_period: ${rm_log_interval}
+dormant_threshold: 0.1
+bt_log_period: ${rm_log_interval}
+
+# logger
+log_frequency: 10000
+log_save_tb: true
+use_wandb: false
+
+# setups
+seed: 1
+env: dog_stand
+
+# hydra configuration
+hydra:
+    name: ${env}
+    run:
+        dir: ./exp/${env}/static_sac/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/maxfeed${max_feedback}_seg${segment}_act${activation}_seed${seed}

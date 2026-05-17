@@ -35,7 +35,8 @@ replay_buffer_capacity: ${num_train_steps}
 # evaluation config
 eval_frequency: 10000
 num_eval_episodes: 10
-device: cuda
+gpu: 0
+device: cuda:${gpu}
 
 # dormant neuron tracking
 dormant_log_period: 5000
