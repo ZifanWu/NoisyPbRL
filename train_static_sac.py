@@ -186,16 +186,13 @@ class Workspace:
                         np.array(cur_r, dtype=np.float32).reshape(-1, 1)
                     )
 
-                if step > 0:
-                    self.logger.log('train/duration',
-                                    time.time() - start_time, step)
-                    self.logger.log('train/episode_reward',
-                                    episode_reward, step)
-                    self.logger.log('train/episode', episode, step)
-                    if self.log_success:
-                        self.logger.log('train/episode_success',
-                                        episode_success, step)
-                    self.logger.dump(step)
+                if step > 0 and episode % 10 == 0:
+                    print(
+                        f'[Phase 1] step {step} | episode {episode} '
+                        f'| reward {episode_reward:.2f}'
+                        + (f' | success {episode_success:.2f}'
+                           if self.log_success else '')
+                    )
                     start_time = time.time()
 
                 obs = self.env.reset()
@@ -315,42 +312,64 @@ class Workspace:
                 'Check episode length vs. segment size, or teacher skip threshold.'
             )
 
+        # Redirect Phase 2 RM metric logging to a custom wandb x-axis
+        # (rm_grad_step) so that RM grad steps never advance the global wandb
+        # step counter, which Phase 3 uses for env steps starting from 0.
+        _orig_wandb_log = None
+        if cfg.use_wandb:
+            import wandb
+            wandb.define_metric('reward_model/*', step_metric='rm_grad_step')
+
+            _orig_wandb_log = wandb.log
+
+            def _rm_phase_log(data, step=None, **kwargs):
+                if step is not None:
+                    data = {**data, 'rm_grad_step': step}
+                _orig_wandb_log(data, **kwargs)
+
+            wandb.log = _rm_phase_log
+
+        def _log_rm_snapshot(grad_step):
+            self.reward_model.env_step = grad_step
+            self.reward_model.log_buffer_bt_metrics(grad_step)
+            self.reward_model.log_dormant_neurons()
+
+        # Pre-training snapshot.
+        if cfg.use_wandb:
+            _log_rm_snapshot(0)
+
         # Train RM — same criterion as each PEBBLE learn_reward round.
         total_acc = 0.0
-        for epoch in range(cfg.reward_update):
-            # Use gradient-step count as the wandb x-axis for RM metrics.
-            self.reward_model.env_step = self.reward_model.reward_grad_steps
+        try:
+            for epoch in range(cfg.reward_update):
+                gs = self.reward_model.reward_grad_steps
+                # log_buffer_bt_metrics is not called inside train_reward();
+                # call it manually at the same cadence as the other metrics.
+                if cfg.use_wandb and gs > 0 and gs % cfg.rm_log_interval == 0:
+                    _log_rm_snapshot(gs)
 
-            # log_buffer_bt_metrics is not called inside train_reward();
-            # call it manually at the same cadence as the other metrics.
-            if (cfg.use_wandb
-                    and self.reward_model.reward_grad_steps > 0
-                    and self.reward_model.reward_grad_steps
-                    % cfg.rm_log_interval == 0):
-                self.reward_model.log_buffer_bt_metrics(
-                    self.reward_model.reward_grad_steps
-                )
+                if cfg.label_margin > 0 or cfg.teacher_eps_equal > 0:
+                    train_acc = self.reward_model.train_soft_reward()
+                else:
+                    train_acc = self.reward_model.train_reward()
 
-            if cfg.label_margin > 0 or cfg.teacher_eps_equal > 0:
-                train_acc = self.reward_model.train_soft_reward()
-            else:
-                train_acc = self.reward_model.train_reward()
+                total_acc = np.mean(train_acc)
+                if total_acc > 0.97:
+                    print(
+                        f'[Phase 2] RM converged at epoch {epoch}, '
+                        f'acc={total_acc:.4f}'
+                    )
+                    break
 
-            total_acc = np.mean(train_acc)
-            if total_acc > 0.97:
-                print(
-                    f'[Phase 2] RM converged at epoch {epoch}, '
-                    f'acc={total_acc:.4f}'
-                )
-                break
+            # Final snapshot after training completes.
+            if cfg.use_wandb:
+                _log_rm_snapshot(self.reward_model.reward_grad_steps)
 
-        # Final metric snapshot regardless of interval alignment.
-        if cfg.use_wandb:
-            self.reward_model.env_step = self.reward_model.reward_grad_steps
-            self.reward_model.log_buffer_bt_metrics(
-                self.reward_model.reward_grad_steps
-            )
-            self.reward_model.log_dormant_neurons()
+        finally:
+            # Always restore wandb.log so Phase 3 uses normal global step.
+            if _orig_wandb_log is not None:
+                import wandb
+                wandb.log = _orig_wandb_log
 
         self.logger.log('train/reward_model_acc', total_acc, 0)
         self.logger.dump(0)

@@ -24,7 +24,7 @@ teacher_eps_equal: 0
 max_feedback: 1400
 
 # static-SAC specific
-rm_log_interval: 5000       # log RM metrics every this many gradient steps
+rm_log_interval: 100        # log RM metrics every this many gradient steps (Phase 2)
 traj_cache_dir: trajectory_cache  # relative to project root
 
 # environment interaction
@@ -44,10 +44,12 @@ num_eval_episodes: 10
 gpu: 0
 device: cuda:${gpu}
 
-# dormant neuron / BT weight logging periods (wired to rm_log_interval)
-dormant_log_period: ${rm_log_interval}
+# dormant neuron / BT weight logging for Phase 3 policy agent (env steps).
+# Intentionally decoupled from rm_log_interval — Phase 2 RM metrics use
+# rm_log_interval (grad steps); Phase 3 critic uses dormant_log_period (env steps).
+dormant_log_period: 5000
 dormant_threshold: 0.1
-bt_log_period: ${rm_log_interval}
+bt_log_period: 5000
 
 # logger
 log_frequency: 10000
