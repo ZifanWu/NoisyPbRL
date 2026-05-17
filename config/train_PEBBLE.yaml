@@ -26,6 +26,8 @@ teacher_eps_mistake: 0
 teacher_eps_skip: 0
 teacher_eps_equal: 0
 
+rm_reset: false
+
 # scheduling
 reward_schedule: 0
 

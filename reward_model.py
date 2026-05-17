@@ -414,13 +414,18 @@ class RewardModel:
         
     def construct_ensemble(self):
         for i in range(self.de):
-            model = nn.Sequential(*gen_net(in_size=self.ds+self.da, 
-                                           out_size=1, H=256, n_layers=3, 
+            model = nn.Sequential(*gen_net(in_size=self.ds+self.da,
+                                           out_size=1, H=256, n_layers=3,
                                            activation=self.activation)).float().to(device)
             self.ensemble.append(model)
             self.paramlst.extend(model.parameters())
-            
+
         self.opt = torch.optim.Adam(self.paramlst, lr = self.lr)
+
+    def reset_ensemble(self):
+        self.ensemble = []
+        self.paramlst = []
+        self.construct_ensemble()
             
     def add_data(self, obs, act, rew, done):
         sa_t = np.concatenate([obs, act], axis=-1)

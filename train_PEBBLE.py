@@ -168,6 +168,9 @@ class Workspace(object):
         self.total_feedback += self.reward_model.mb_size
         self.labeled_feedback += labeled_queries
         
+        if self.cfg.rm_reset and first_flag != 1:
+            self.reward_model.reset_ensemble()
+
         train_acc = 0
         if self.labeled_feedback > 0:
             # update reward

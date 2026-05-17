@@ -192,6 +192,60 @@ scripts/
 Feedback budgets and per-environment hyper-parameters match those of the
 corresponding PEBBLE scripts.
 
+## PEBBLE + RM Reset — online PbRL with per-round reward model re-initialisation
+
+`train_PEBBLE.py` with `rm_reset=true` adds a single behavioural change to the
+standard PEBBLE loop: the reward model's weights and optimizer are re-initialised
+from scratch at the start of every reward learning round **after the first**.
+
+### RM Reset — configuration
+
+Set `rm_reset=true` on the command line or in `config/train_PEBBLE.yaml`:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `rm_reset` | `false` | Re-initialise reward model weights and optimizer before each reward learning round (excluding the first) |
+
+### RM Reset — running
+
+```bash
+./scripts/[env_name]/[teacher_type]/[max_budget]/run_PEBBLE.sh [sampling_scheme] [gpu_id] rm_reset=true
+```
+
+Or inline:
+
+```bash
+# button_press, noisy teacher, 20 000 feedback pairs, GPU 0, disagreement sampling
+seed=12345 python train_PEBBLE.py \
+    use_wandb=true gpu=0 \
+    env=metaworld_button-press-v2 seed=$seed \
+    agent.params.actor_lr=0.0003 agent.params.critic_lr=0.0003 \
+    gradient_update=1 activation=tanh \
+    num_unsup_steps=9000 num_train_steps=1000000 \
+    agent.params.batch_size=512 \
+    double_q_critic.params.hidden_dim=256 double_q_critic.params.hidden_depth=3 \
+    diag_gaussian_actor.params.hidden_dim=256 diag_gaussian_actor.params.hidden_depth=3 \
+    reward_update=10 num_interact=5000 max_feedback=20000 reward_batch=100 \
+    feed_type=1 \
+    teacher_beta=1 teacher_gamma=1 \
+    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
+    rm_reset=true
+```
+
+### Implementation
+
+The reset is a two-liner in `RewardModel` (`reward_model.py`):
+
+```python
+def reset_ensemble(self):
+    self.ensemble = []
+    self.paramlst = []
+    self.construct_ensemble()
+```
+
+Called in `learn_reward()` (`train_PEBBLE.py`) after feedback collection and
+before the training loop, conditioned on `cfg.rm_reset and first_flag != 1`.
+
 ## Dependency versions (tested)
 
 | Package | Version |
