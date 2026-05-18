@@ -51,10 +51,12 @@ class Workspace:
 
         if cfg.use_wandb:
             import wandb
+            import socket
             wandb.init(
                 project='NoisyPbRL',
                 name=f'{cfg.env}__static_sac__seed{cfg.seed}',
                 config=dict(cfg),
+                notes=socket.gethostname(),
             )
 
         self.logger = Logger(

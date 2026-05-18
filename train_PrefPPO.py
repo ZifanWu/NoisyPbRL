@@ -189,6 +189,7 @@ if __name__ == "__main__":
         verbose=1)
 
     if args.use_wandb:
+        import socket
         import wandb
         wandb.tensorboard.patch(root_logdir=args.tensorboard_log)
         wandb.init(
@@ -196,6 +197,7 @@ if __name__ == "__main__":
             name=f'{env_name}__prefppo__seed{args.seed}',
             config=vars(args),
             sync_tensorboard=True,
+            notes=socket.gethostname(),
         )
 
     # save args

@@ -27,11 +27,13 @@ class Workspace(object):
         self.cfg = cfg
 
         if cfg.use_wandb:
+            import socket
             import wandb
             wandb.init(
                 project='NoisyPbRL',
                 name=f'{cfg.env}__{cfg.agent.name}__seed{cfg.seed}',
                 config=dict(cfg),
+                notes=socket.gethostname(),
             )
 
         self.logger = Logger(
