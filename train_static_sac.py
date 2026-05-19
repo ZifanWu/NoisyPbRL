@@ -49,16 +49,6 @@ class Workspace:
         print(f'workspace: {self.work_dir}')
         self.cfg = cfg
 
-        if cfg.use_wandb:
-            import wandb
-            import socket
-            wandb.init(
-                project='NoisyPbRL',
-                name=f'{cfg.env}__static_sac__seed{cfg.seed}',
-                config=dict(cfg),
-                notes=socket.gethostname(),
-            )
-
         self.logger = Logger(
             self.work_dir,
             save_tb=cfg.log_save_tb,
@@ -314,12 +304,23 @@ class Workspace:
                 'Check episode length vs. segment size, or teacher skip threshold.'
             )
 
+        # Initialise wandb here (Phase 2 start) so Phase 1 produces no run.
+        # A single run covers both Phase 2 (RM training) and Phase 3 (policy).
+        if cfg.use_wandb:
+            import wandb
+            import socket
+            wandb.init(
+                project='NoisyPbRL',
+                name=f'{cfg.env}__static_sac__seed{cfg.seed}',
+                config=dict(cfg),
+                notes=socket.gethostname(),
+            )
+
         # Redirect Phase 2 RM metric logging to a custom wandb x-axis
         # (rm_grad_step) so that RM grad steps never advance the global wandb
         # step counter, which Phase 3 uses for env steps starting from 0.
         _orig_wandb_log = None
         if cfg.use_wandb:
-            import wandb
             wandb.define_metric('reward_model/*', step_metric='rm_grad_step')
 
             _orig_wandb_log = wandb.log
