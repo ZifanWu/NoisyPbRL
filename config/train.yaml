@@ -39,4 +39,4 @@ save_model: true
 hydra:
     name: ${env}
     run:
-        dir: ./exp/${env}/H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_B${agent.params.batch_size}_tau${agent.params.critic_tau}/${agent.name}_unsup${num_unsup_steps}_topk${topK}_${experiment}_lr${agent.params.actor_lr}_temp${agent.params.init_temperature}_seed${seed}
+        dir: /uufs/chpc.utah.edu/common/home/dbrown-group1/zifan/NoisyPbRL/exp/${env}/H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_B${agent.params.batch_size}_tau${agent.params.critic_tau}/${agent.name}_unsup${num_unsup_steps}_topk${topK}_${experiment}_lr${agent.params.actor_lr}_temp${agent.params.init_temperature}_seed${seed}
