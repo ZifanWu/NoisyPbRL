@@ -2,7 +2,7 @@ defaults:
     - agent: sac_explore
 
 # this needs to be specified manually
-experiment: PEBBLE-RUNE
+experiment: RUNE
 
 # reward learning
 segment: 50
