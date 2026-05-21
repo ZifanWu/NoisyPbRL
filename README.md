@@ -104,6 +104,92 @@ In B-Pref, we tried the following teachers:
 ./scripts/[env_name]/[teacher_type]/[max_budget]/run_PEBBLE.sh [sampling_scheme: 0=uniform, 1=disagreement, 2=entropy]
 ```
 
+### PEBBLE + RUNE (reward uncertainty exploration bonus)
+
+`train_PEBBLE_explore.py` adds an intrinsic exploration bonus equal to the **std of the reward model ensemble** scaled by a decaying β coefficient. The exploration buffer tracks extrinsic and intrinsic rewards separately.
+
+```bash
+# walker_walk, oracle teacher, 100 feedback pairs, disagreement sampling
+CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_explore.py \
+    env=walker_walk seed=12345 \
+    agent.params.actor_lr=0.0005 agent.params.critic_lr=0.0005 \
+    gradient_update=1 activation=tanh \
+    num_unsup_steps=9000 num_train_steps=500000 \
+    num_interact=20000 max_feedback=100 reward_batch=10 reward_update=50 \
+    feed_type=1 \
+    teacher_beta=-1 teacher_gamma=1 \
+    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
+    agent.params.beta_schedule=linear_decay agent.params.beta_init=0.05 agent.params.beta_decay=0.00001
+
+# metaworld_hammer-v2, oracle teacher, 10000 feedback pairs
+CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_explore.py \
+    env=metaworld_hammer-v2 seed=12345 \
+    agent.params.actor_lr=0.0003 agent.params.critic_lr=0.0003 \
+    gradient_update=1 activation=tanh num_unsup_steps=9000 num_train_steps=2000000 \
+    agent.params.batch_size=512 \
+    double_q_critic.params.hidden_dim=256 double_q_critic.params.hidden_depth=3 \
+    diag_gaussian_actor.params.hidden_dim=256 diag_gaussian_actor.params.hidden_depth=3 \
+    reward_update=10 num_interact=5000 max_feedback=10000 reward_batch=50 \
+    feed_type=1 \
+    teacher_beta=-1 teacher_gamma=1 \
+    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0
+```
+
+Key RUNE hyperparameters (set in config or command line):
+
+| Parameter | Default | Description |
+|---|---|---|
+| `agent.params.beta_schedule` | `linear_decay` | Schedule for exploration bonus weight (`constant` or `linear_decay`) |
+| `agent.params.beta_init` | `0.05` | Initial β for exploration bonus |
+| `agent.params.beta_decay` | `0.00001` | Per-step multiplicative decay of β |
+
+### SURF (semi-supervised reward learning with data augmentation)
+
+`train_PEBBLE_semi_dataaug.py` improves reward model sample efficiency by:
+
+1. collecting `inv_label_ratio × mb_size` **unlabeled** queries each round in addition to labeled ones
+2. training with pseudo-labels above `threshold_u` confidence and temporal crop augmentation
+
+```bash
+# walker_walk, oracle teacher, 100 feedback pairs
+CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_semi_dataaug.py \
+    env=walker_walk seed=12345 \
+    agent.params.actor_lr=0.0005 agent.params.critic_lr=0.0005 \
+    gradient_update=1 activation=tanh \
+    num_unsup_steps=9000 num_train_steps=500000 \
+    num_interact=20000 max_feedback=100 reward_batch=10 \
+    inv_label_ratio=100 reward_update=1000 \
+    feed_type=1 \
+    teacher_beta=-1 teacher_gamma=1 \
+    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
+    threshold_u=0.99 mu=4
+
+# metaworld_hammer-v2, oracle teacher, 10000 feedback pairs
+CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_semi_dataaug.py \
+    env=metaworld_hammer-v2 seed=12345 \
+    agent.params.actor_lr=0.0003 agent.params.critic_lr=0.0003 \
+    gradient_update=1 activation=tanh num_unsup_steps=9000 num_train_steps=2000000 \
+    agent.params.batch_size=512 \
+    double_q_critic.params.hidden_dim=256 double_q_critic.params.hidden_depth=3 \
+    diag_gaussian_actor.params.hidden_dim=256 diag_gaussian_actor.params.hidden_depth=3 \
+    reward_update=20 num_interact=5000 max_feedback=10000 reward_batch=50 \
+    feed_type=1 \
+    teacher_beta=-1 teacher_gamma=1 \
+    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
+    threshold_u=0.99 mu=4 inv_label_ratio=10
+```
+
+Key SURF hyperparameters:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `inv_label_ratio` | `10` | Ratio of unlabeled to labeled queries collected each round |
+| `threshold_u` | `0.95` | Confidence threshold for pseudo-label acceptance |
+| `mu` | `1` | Unlabeled batch size multiplier relative to labeled batch |
+| `lambda_u` | `1` | Weight of the pseudo-label loss term |
+| `dataaug_window` | `5` | Half-window added to each side of segment for temporal cropping |
+| `crop_range` | `5` | ±range for random crop length around the original segment size |
+
 ### PrefPPO
 
 ```bash
@@ -191,6 +277,40 @@ scripts/
 
 Feedback budgets and per-environment hyper-parameters match those of the
 corresponding PEBBLE scripts.
+
+## Scripts overview
+
+All run scripts live under `scripts/` and follow the layout:
+
+```text
+scripts/
+  {env}/
+    {max_feedback}/
+      {teacher}/
+        run_PEBBLE.sh        [feed_type] [gpu]
+        run_RUNE.sh          [feed_type] [gpu]
+        run_SURF.sh          [feed_type] [gpu]
+        run_PrefPPO.sh       [feed_type] [gpu]
+        run_static_SAC.sh    [gpu]
+```
+
+`$1` selects the query sampling scheme (0 = uniform, 1 = disagreement, 2 = entropy).
+`$2` selects the GPU (default: 0).
+
+### Environments
+
+| Env directory | Gym / DMC id | Algorithms |
+|---|---|---|
+| `button_press` | `metaworld_button-press-v2` | PEBBLE, RUNE, SURF, PrefPPO, Static SAC |
+| `sweep_into` | `metaworld_sweep-into-v2` | PEBBLE, RUNE, SURF, PrefPPO, Static SAC |
+| `walker_walk` | `walker_walk` | PEBBLE, RUNE, SURF, PrefPPO |
+| `quadruped_walk` | `quadruped_walk` | PEBBLE, RUNE, SURF, PrefPPO, Static SAC |
+| `hammer` | `metaworld_hammer-v2` | PEBBLE, RUNE, SURF, PrefPPO |
+| `door_close` | `metaworld_door-close-v2` | PEBBLE, RUNE, SURF, PrefPPO |
+| `door_open` | `metaworld_door-open-v2` | PEBBLE, RUNE, SURF, PrefPPO |
+| `door_unlock` | `metaworld_door-unlock-v2` | PEBBLE, RUNE, SURF, PrefPPO |
+| `drawer_open` | `metaworld_drawer-open-v2` | PEBBLE, RUNE, SURF, PrefPPO |
+| `window_close` | `metaworld_window-close-v2` | PEBBLE, RUNE, SURF, PrefPPO |
 
 ## PEBBLE + RM Reset — online PbRL with per-round reward model re-initialisation
 

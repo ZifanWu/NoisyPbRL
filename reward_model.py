@@ -526,7 +526,21 @@ class RewardModel:
         r_hats = np.array(r_hats)
 
         return np.mean(r_hats, axis=0)
-    
+
+    def r_hat_std(self, x):
+        r_hats = []
+        for member in range(self.de):
+            r_hats.append(self.r_hat_member(x, member=member).detach().cpu().numpy())
+        r_hats = np.array(r_hats)
+        return np.mean(r_hats), np.std(r_hats)
+
+    def r_hat_std_batch(self, x):
+        r_hats = []
+        for member in range(self.de):
+            r_hats.append(self.r_hat_member(x, member=member).detach().cpu().numpy())
+        r_hats = np.array(r_hats)
+        return np.mean(r_hats, axis=0), np.std(r_hats, axis=0)
+
     def save(self, model_dir, step):
         for member in range(self.de):
             torch.save(
