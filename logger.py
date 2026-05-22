@@ -39,6 +39,15 @@ AGENT_TRAIN_FORMAT = {
         ('actor_entropy', 'AENT', 'float'),
         ('bc_loss', 'BCLOSS', 'float'),
     ],
+    'sac_explore': [
+        ('batch_reward', 'BR', 'float'),
+        ('actor_loss', 'ALOSS', 'float'),
+        ('critic_loss', 'CLOSS', 'float'),
+        ('alpha_loss', 'TLOSS', 'float'),
+        ('alpha_value', 'TVAL', 'float'),
+        ('actor_entropy', 'AENT', 'float'),
+        ('explore_reward', 'ER', 'float'),
+    ],
     'ppo': [
         ('batch_reward', 'BR', 'float'),
     ],
