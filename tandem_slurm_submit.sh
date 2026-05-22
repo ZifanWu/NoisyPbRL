@@ -11,39 +11,27 @@
 #   condition — skip if output directory already exists
 #
 # Usage:
-#   Edit the CONFIGURE block, then run:
-#     bash tandem_slurm_submit.sh
-#   Dry-run (print commands, don't submit):
-#     DRY_RUN=1 bash tandem_slurm_submit.sh
+#   Edit the CONFIGURE block, then:
+#     bash tandem_slurm_submit.sh          # submit for real
+#     DRY_RUN=1 bash tandem_slurm_submit.sh  # print without submitting
 # ==============================================================
 
 # ===================== CONFIGURE BELOW ========================
 
 envs=(walker_walk)
-# Full env names passed to env= argument (see resolve_env_name for mapping)
+# Supported: walker_walk quadruped_walk
+#            door_open door_close door_unlock
+#            drawer_open button_press sweep_into hammer window_close
 
 teachers=(oracle stochastic mistake)
-# oracle | stochastic | mistake  (see README for hyperparams)
+# oracle | stochastic | mistake
 
-seeds=(12345 23451 34512 45123 51234)
+seeds=(12345 23451 34512 45123 51234 67890 78906 89067 90678 6789)
 
-# ── Training hyperparams (identical across ALL 6 conditions) ──
-num_train_steps=500000
-num_seed_steps=1000
-num_unsup_steps=5000
-num_interact=5000
-max_feedback=1400
-reward_batch=128
-reward_update=200
+# Shared across all conditions for a given run (these are fixed by design)
 feed_type=1
-segment=50
-ensemble_size=3
-large_batch=10
 rm_reset=false
-activation=tanh
-gradient_update=1
-
-sanity_mode=false       # enable only for debugging short runs
+sanity_mode=false
 use_wandb=true
 
 # ── SLURM resource settings ───────────────────────────────────
@@ -73,55 +61,166 @@ TANDEM_CONDITIONS=(
 
 mkdir -p "$LOG_DIR"
 
-# ── Helper: short env key → full env name (matches cfg.env) ──
-resolve_env_name() {
-    case "$1" in
-        walker_walk)    echo "walker_walk" ;;
-        quadruped_walk) echo "quadruped_walk" ;;
-        button_press)   echo "metaworld_button-press-v2" ;;
-        sweep_into)     echo "metaworld_sweep-into-v2" ;;
-        hammer)         echo "metaworld_hammer-v2" ;;
-        door_close)     echo "metaworld_door-close-v2" ;;
-        door_open)      echo "metaworld_door-open-v2" ;;
-        door_unlock)    echo "metaworld_door-unlock-v2" ;;
-        drawer_open)    echo "metaworld_drawer-open-v2" ;;
-        window_close)   echo "metaworld_window-close-v2" ;;
-        *) echo "$1" ;;  # pass through unknown names unchanged
+# ── Per-env hyperparameters (sourced from scripts/ reference runs) ──────────
+#
+# Sets these variables in caller scope:
+#   ENV_NAME          full env name passed to env=
+#   ACTOR_LR CRITIC_LR
+#   NUM_TRAIN_STEPS NUM_SEED_STEPS NUM_UNSUP_STEPS
+#   NUM_INTERACT MAX_FEEDBACK REWARD_BATCH REWARD_UPDATE
+#   HIDDEN_DIM HIDDEN_DEPTH BATCH_SIZE   (agent architecture)
+#   LARGE_BATCH SEGMENT ENSEMBLE_SIZE ACTIVATION GRADIENT_UPDATE
+#
+resolve_env_hyperparams() {
+    local env=$1
+
+    # Defaults shared by all envs
+    NUM_SEED_STEPS=1000
+    LARGE_BATCH=10
+    SEGMENT=50
+    ENSEMBLE_SIZE=3
+    ACTIVATION=tanh
+    GRADIENT_UPDATE=1
+    # Architecture defaults (dm_control)
+    HIDDEN_DIM=1024
+    HIDDEN_DEPTH=2
+    BATCH_SIZE=""        # empty = use agent config default (256)
+
+    case "$env" in
+        walker_walk)
+            ENV_NAME="walker_walk"
+            ACTOR_LR=0.0005;  CRITIC_LR=0.0005
+            NUM_TRAIN_STEPS=500000;  NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=20000;  MAX_FEEDBACK=1000
+            REWARD_BATCH=100;    REWARD_UPDATE=50
+            ;;
+        quadruped_walk)
+            ENV_NAME="quadruped_walk"
+            ACTOR_LR=0.0001;  CRITIC_LR=0.0001
+            NUM_TRAIN_STEPS=1000000; NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=30000;  MAX_FEEDBACK=1000
+            REWARD_BATCH=100;    REWARD_UPDATE=50
+            ;;
+        door_open)
+            ENV_NAME="metaworld_door-open-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=1000000; NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=10000;  MAX_FEEDBACK=2000
+            REWARD_BATCH=50;     REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        door_close)
+            ENV_NAME="metaworld_door-close-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=500000;  NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=10000;  MAX_FEEDBACK=1000
+            REWARD_BATCH=50;     REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        door_unlock)
+            ENV_NAME="metaworld_door-unlock-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=1000000; NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=10000;  MAX_FEEDBACK=2500
+            REWARD_BATCH=25;     REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        drawer_open)
+            ENV_NAME="metaworld_drawer-open-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=1000000; NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=10000;  MAX_FEEDBACK=10000
+            REWARD_BATCH=100;    REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        button_press)
+            ENV_NAME="metaworld_button-press-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=1000000; NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=5000;   MAX_FEEDBACK=10000
+            REWARD_BATCH=50;     REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        sweep_into)
+            ENV_NAME="metaworld_sweep-into-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=1000000; NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=5000;   MAX_FEEDBACK=10000
+            REWARD_BATCH=50;     REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        hammer)
+            ENV_NAME="metaworld_hammer-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=2000000; NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=5000;   MAX_FEEDBACK=10000
+            REWARD_BATCH=50;     REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        window_close)
+            ENV_NAME="metaworld_window-close-v2"
+            ACTOR_LR=0.0003;  CRITIC_LR=0.0003
+            NUM_TRAIN_STEPS=500000;  NUM_UNSUP_STEPS=9000
+            NUM_INTERACT=10000;  MAX_FEEDBACK=1000
+            REWARD_BATCH=10;     REWARD_UPDATE=10
+            HIDDEN_DIM=256; HIDDEN_DEPTH=3; BATCH_SIZE=512
+            ;;
+        *)
+            echo "ERROR: unknown env '$env'" >&2
+            echo "Supported: walker_walk quadruped_walk door_open door_close" >&2
+            echo "           door_unlock drawer_open button_press sweep_into" >&2
+            echo "           hammer window_close" >&2
+            exit 1
+            ;;
     esac
 }
 
-# ── Helper: teacher name → (beta gamma eps_mistake eps_skip eps_equal) ──
+# ── Helper: teacher name → (beta gamma eps_mistake eps_skip eps_equal) ──────
 resolve_teacher() {
     case "$1" in
         oracle)     echo "-1 1 0 0 0" ;;
         stochastic) echo "1 1 0 0 0" ;;
         mistake)    echo "-1 1 0.1 0 0" ;;
-        *) echo "ERROR: unknown teacher '$1'" >&2; exit 1 ;;
+        *) echo "ERROR: unknown teacher '$1' (oracle|stochastic|mistake)" >&2; exit 1 ;;
     esac
 }
 
-# ── Helper: build the python argument string for one run ──────
+# ── Helper: build the full python argument string ────────────────────────────
 build_args() {
-    local env_name=$1 seed=$2 mode=$3
+    local seed=$1 mode=$2
     local beta gamma eps_m eps_s eps_e
     read -r beta gamma eps_m eps_s eps_e <<< "$teacher_params"
 
+    # Architecture args: only pass hidden_dim/hidden_depth/batch_size when
+    # they differ from the agent config defaults (i.e. for metaworld envs).
+    local arch_args=""
+    arch_args="${arch_args} diag_gaussian_actor.params.hidden_dim=${HIDDEN_DIM}"
+    arch_args="${arch_args} diag_gaussian_actor.params.hidden_depth=${HIDDEN_DEPTH}"
+    arch_args="${arch_args} double_q_critic.params.hidden_dim=${HIDDEN_DIM}"
+    arch_args="${arch_args} double_q_critic.params.hidden_depth=${HIDDEN_DEPTH}"
+    if [ -n "$BATCH_SIZE" ]; then
+        arch_args="${arch_args} agent.params.batch_size=${BATCH_SIZE}"
+    fi
+
     printf '%s' \
-        "env=${env_name} seed=${seed} tandem_mode=${mode}" \
-        " num_train_steps=${num_train_steps}" \
-        " num_seed_steps=${num_seed_steps}" \
-        " num_unsup_steps=${num_unsup_steps}" \
-        " num_interact=${num_interact}" \
-        " max_feedback=${max_feedback}" \
-        " reward_batch=${reward_batch}" \
-        " reward_update=${reward_update}" \
+        "env=${ENV_NAME} seed=${seed} tandem_mode=${mode}" \
+        " agent.params.actor_lr=${ACTOR_LR}" \
+        " agent.params.critic_lr=${CRITIC_LR}" \
+        " ${arch_args}" \
+        " gradient_update=${GRADIENT_UPDATE}" \
+        " activation=${ACTIVATION}" \
+        " num_train_steps=${NUM_TRAIN_STEPS}" \
+        " num_seed_steps=${NUM_SEED_STEPS}" \
+        " num_unsup_steps=${NUM_UNSUP_STEPS}" \
+        " num_interact=${NUM_INTERACT}" \
+        " max_feedback=${MAX_FEEDBACK}" \
+        " reward_batch=${REWARD_BATCH}" \
+        " reward_update=${REWARD_UPDATE}" \
         " feed_type=${feed_type}" \
-        " segment=${segment}" \
-        " ensemble_size=${ensemble_size}" \
-        " large_batch=${large_batch}" \
+        " segment=${SEGMENT}" \
+        " ensemble_size=${ENSEMBLE_SIZE}" \
+        " large_batch=${LARGE_BATCH}" \
         " rm_reset=${rm_reset}" \
-        " activation=${activation}" \
-        " gradient_update=${gradient_update}" \
         " teacher_beta=${beta}" \
         " teacher_gamma=${gamma}" \
         " teacher_eps_mistake=${eps_m}" \
@@ -133,9 +232,9 @@ build_args() {
         " gpu=0"
 }
 
-# ── Helper: write and submit one SLURM job ────────────────────
+# ── Helper: write and submit one SLURM job ───────────────────────────────────
+# dep: job ID to wait on ("" = no dependency).
 # Returns the SLURM job ID via stdout.
-# dep: job ID to wait on (pass "" for no dependency).
 submit_slurm() {
     local job_name=$1 dep=$2 cmd=$3
     local dep_directive=""
@@ -146,13 +245,14 @@ submit_slurm() {
     cat > "$tmp" << EOT
 #!/bin/bash
 #SBATCH --gres=gpu
-#SBATCH --cpus-per-task=${CPUS}
+#SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1
 #SBATCH --job-name=${job_name}
-#SBATCH --time=${TIME_LIMIT}
-#SBATCH --partition=${PARTITION}
-#SBATCH --account=${ACCOUNT}
-#SBATCH --exclude=${EXCLUDE_NODES}
+#SBATCH --time=12:00:00
+##SBATCH --qos=dbrown-gpu-grn
+#SBATCH --partition=soc-gpu-np
+#SBATCH --account=soc-gpu-np
+#SBATCH --exclude=notch372,notch369,notch475,notch371
 #SBATCH --output=${LOG_DIR}/${job_name}_%j.out
 ${dep_directive}
 
@@ -162,9 +262,10 @@ ${cmd}
 EOT
 
     if [ "$DRY_RUN" = "1" ]; then
-        echo "DRY_RUN"
+        echo "--- DRY_RUN: $job_name ---"
         cat "$tmp"
         rm "$tmp"
+        echo "DRY_RUN"   # stand-in for job ID
         return
     fi
 
@@ -174,21 +275,21 @@ EOT
     echo "$jid"
 }
 
-# ── Summary counters ─────────────────────────────────────────
+# ── Summary counters ─────────────────────────────────────────────────────────
 total_submitted=0
 total_skipped=0
 
 echo "=== Tandem Experiment SLURM Submission ==="
-echo "  envs     : ${envs[*]}"
-echo "  teachers : ${teachers[*]}"
-echo "  seeds    : ${seeds[*]}"
-echo "  conditions: baseline + ${TANDEM_CONDITIONS[*]}"
-echo "  dry_run  : ${DRY_RUN}"
+echo "  envs      : ${envs[*]}"
+echo "  teachers  : ${teachers[*]}"
+echo "  seeds     : ${seeds[*]}"
+echo "  dry_run   : ${DRY_RUN}"
 echo ""
 
-# ── Main loop ─────────────────────────────────────────────────
+# ── Main loop ─────────────────────────────────────────────────────────────────
 for env in "${envs[@]}"; do
-    env_name=$(resolve_env_name "$env")
+
+    resolve_env_hyperparams "$env"  # populates ENV_NAME, ACTOR_LR, etc.
 
     for teacher in "${teachers[@]}"; do
         teacher_params=$(resolve_teacher "$teacher")
@@ -198,27 +299,27 @@ for env in "${envs[@]}"; do
         for seed in "${seeds[@]}"; do
             echo "--- env=${env}  teacher=${teacher}  seed=${seed} ---"
 
-            # ── Step 1: Baseline ─────────────────────────────────────────
-            baseline_h5="${EXP_DIR}/tandem_logs/tandem_baseline_${env_name}_seed${seed}.h5"
+            # ── Step 1: Baseline ─────────────────────────────────────────────
+            baseline_h5="${EXP_DIR}/tandem_logs/tandem_baseline_${ENV_NAME}_seed${seed}.h5"
             baseline_jid=""
 
             if [ -f "$baseline_h5" ]; then
-                echo "  [SKIP]   baseline  →  HDF5 exists"
+                echo "  [SKIP]   baseline  →  HDF5 already exists"
                 total_skipped=$((total_skipped + 1))
             else
-                job_name="${env:0:4}_${teacher:0:3}_base_s${seed}"
-                args=$(build_args "$env_name" "$seed" "baseline")
+                job_name="${env:0:4}_${teacher:0:3}_base_${seed}"
+                args=$(build_args "$seed" "baseline")
                 cmd="${PYTHON} train_PEBBLE.py ${args}"
                 baseline_jid=$(submit_slurm "$job_name" "" "$cmd")
-                echo "  [SUBMIT] baseline  →  job ${baseline_jid:-DRY}"
+                echo "  [SUBMIT] baseline  →  job ${baseline_jid}"
                 total_submitted=$((total_submitted + 1))
             fi
 
-            # ── Step 2: Tandem conditions ────────────────────────────────
+            # ── Step 2: Tandem conditions ────────────────────────────────────
             for mode in "${TANDEM_CONDITIONS[@]}"; do
 
-                # Skip if output directory already exists for this condition
-                existing=$(find "${EXP_DIR}/${env_name}" -maxdepth 8 -type d \
+                # Skip if output directory already exists for this (condition, seed)
+                existing=$(find "${EXP_DIR}/${ENV_NAME}" -maxdepth 8 -type d \
                     -path "*/${teacher_dir}/*/tandem_${mode}/*seed${seed}" \
                     2>/dev/null | head -n1)
 
@@ -228,8 +329,6 @@ for env in "${envs[@]}"; do
                     continue
                 fi
 
-                # Use a compact job name (SLURM limits are system-dependent)
-                # Format: {env4}_{t2}_{mode_code}_{seed5}
                 case "$mode" in
                     all_passive)              mode_code="ap"   ;;
                     passive_pol_active_rm)    mode_code="ppar" ;;
@@ -239,16 +338,14 @@ for env in "${envs[@]}"; do
                 esac
                 job_name="${env:0:4}_${teacher:0:2}_${mode_code}_${seed}"
 
-                args=$(build_args "$env_name" "$seed" "$mode")
+                args=$(build_args "$seed" "$mode")
                 cmd="${PYTHON} train_PEBBLE.py ${args}"
 
                 dep_info=""
-                if [ -n "$baseline_jid" ]; then
-                    dep_info=" (after job ${baseline_jid})"
-                fi
+                [ -n "$baseline_jid" ] && dep_info=" (after job ${baseline_jid})"
 
                 cond_jid=$(submit_slurm "$job_name" "$baseline_jid" "$cmd")
-                echo "  [SUBMIT] ${mode}  →  job ${cond_jid:-DRY}${dep_info}"
+                echo "  [SUBMIT] ${mode}  →  job ${cond_jid}${dep_info}"
                 total_submitted=$((total_submitted + 1))
             done
 
