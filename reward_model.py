@@ -123,6 +123,13 @@ class RewardModel:
         self.img_inputs = []
         self.mb_size = mb_size
         self.origin_mb_size = mb_size
+
+        # ── Episode tracking (used by TandemLogger) ──────────────────────
+        # Parallel to self.inputs: episode ID of each entry in the rolling window.
+        self.input_episode_ids: list[int] = []
+        self._ep_counter:    int = 0   # increments every time an episode finishes
+        self._ep_start_step: int = 0   # global add_data step when current episode began
+        self._global_step:   int = 0   # total add_data calls so far
         self.train_batch_size = 128
         self.CEloss = nn.CrossEntropyLoss()
         self.running_means = []
@@ -430,7 +437,7 @@ class RewardModel:
     def add_data(self, obs, act, rew, done):
         sa_t = np.concatenate([obs, act], axis=-1)
         r_t = rew
-        
+
         flat_input = sa_t.reshape(1, self.da+self.ds)
         r_t = np.array(r_t)
         flat_target = r_t.reshape(1, 1)
@@ -439,6 +446,8 @@ class RewardModel:
         if init_data:
             self.inputs.append(flat_input)
             self.targets.append(flat_target)
+            self.input_episode_ids.append(self._ep_counter)
+            self._ep_start_step = self._global_step
         elif done:
             self.inputs[-1] = np.concatenate([self.inputs[-1], flat_input])
             self.targets[-1] = np.concatenate([self.targets[-1], flat_target])
@@ -446,8 +455,12 @@ class RewardModel:
             if len(self.inputs) > self.max_size:
                 self.inputs = self.inputs[1:]
                 self.targets = self.targets[1:]
+                self.input_episode_ids = self.input_episode_ids[1:]
+            self._ep_counter += 1
             self.inputs.append([])
             self.targets.append([])
+            self.input_episode_ids.append(self._ep_counter)
+            self._ep_start_step = self._global_step + 1
         else:
             if len(self.inputs[-1]) == 0:
                 self.inputs[-1] = flat_input
@@ -455,6 +468,8 @@ class RewardModel:
             else:
                 self.inputs[-1] = np.concatenate([self.inputs[-1], flat_input])
                 self.targets[-1] = np.concatenate([self.targets[-1], flat_target])
+
+        self._global_step += 1
                 
     def add_data_batch(self, obses, rewards):
         num_env = obses.shape[0]
@@ -818,18 +833,121 @@ class RewardModel:
         
         return len(labels)
     
+    # ── Tandem-mode sampling helpers ────────────────────────────────────────
+
+    def score_candidate_pairs(self, sa_t_1, sa_t_2):
+        """Return per-pair ensemble disagreement scores (std of P(seg1>seg2)).
+
+        Called by condition iv-a: the baseline RM scores pairs drawn from the
+        tandem agent's segment pool.
+        """
+        _, disagree = self.get_rank_probability(sa_t_1, sa_t_2)
+        return disagree
+
+    def disagreement_sampling_with_details(self):
+        """Like disagreement_sampling, but also returns intermediate data for logging.
+
+        Returns:
+          (n_labeled, sa_t_1, sa_t_2, r_t_1, r_t_2, labels, selected_disagree_scores)
+        Called during the BASELINE run so the logger can persist what was queried.
+        """
+        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(
+            mb_size=self.mb_size * self.large_batch)
+
+        _, disagree = self.get_rank_probability(sa_t_1, sa_t_2)
+        top_k_index = (-disagree).argsort()[:self.mb_size]
+        selected_disagree = disagree[top_k_index]
+        r_t_1, sa_t_1 = r_t_1[top_k_index], sa_t_1[top_k_index]
+        r_t_2, sa_t_2 = r_t_2[top_k_index], sa_t_2[top_k_index]
+
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(
+            sa_t_1, sa_t_2, r_t_1, r_t_2)
+        if len(labels) > 0:
+            self.put_queries(sa_t_1, sa_t_2, labels)
+        return len(labels), sa_t_1, sa_t_2, r_t_1, r_t_2, labels, selected_disagree
+
+    def uniform_sampling_with_details(self):
+        """Like uniform_sampling, but also returns the queried pairs for logging.
+
+        Returns:
+          (n_labeled, sa_t_1, sa_t_2, r_t_1, r_t_2, labels, dummy_scores)
+        Called on the BASELINE's first learn_reward (first_flag=1) so the logger
+        captures the initial preference batch for replay by passive-RM conditions.
+        """
+        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(mb_size=self.mb_size)
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(
+            sa_t_1, sa_t_2, r_t_1, r_t_2)
+        if len(labels) > 0:
+            self.put_queries(sa_t_1, sa_t_2, labels)
+        dummy_scores = np.zeros(len(labels) if len(labels) > 0 else self.mb_size,
+                                dtype=np.float32)
+        return len(labels), sa_t_1, sa_t_2, r_t_1, r_t_2, labels, dummy_scores
+
+    def disagreement_sampling_external_scorer(self, scorer_rm):
+        """(iv-a) Tandem's own segment pool; pairs scored by scorer_rm (baseline RM).
+
+        Returns n_labeled.
+        """
+        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(
+            mb_size=self.mb_size * self.large_batch)
+
+        disagree = scorer_rm.score_candidate_pairs(sa_t_1, sa_t_2)
+        top_k_index = (-disagree).argsort()[:self.mb_size]
+        r_t_1, sa_t_1 = r_t_1[top_k_index], sa_t_1[top_k_index]
+        r_t_2, sa_t_2 = r_t_2[top_k_index], sa_t_2[top_k_index]
+
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(
+            sa_t_1, sa_t_2, r_t_1, r_t_2)
+        if len(labels) > 0:
+            self.put_queries(sa_t_1, sa_t_2, labels)
+        return len(labels)
+
+    def disagreement_sampling_external_pool(self, ext_inputs: list, ext_targets: list):
+        """(iv-b) Baseline's segment pool; pairs scored by self (tandem RM).
+
+        Temporarily swaps self.inputs/targets with the externally-provided baseline
+        episode pool, draws candidate pairs, restores state, then scores with self.
+        Returns n_labeled.
+        """
+        saved_inputs  = self.inputs
+        saved_targets = self.targets
+        saved_ep_ids  = self.input_episode_ids
+        self.inputs            = ext_inputs
+        self.targets           = ext_targets
+        self.input_episode_ids = list(range(len(ext_inputs)))
+
+        sa_t_1, sa_t_2, r_t_1, r_t_2 = self.get_queries(
+            mb_size=self.mb_size * self.large_batch)
+
+        self.inputs            = saved_inputs
+        self.targets           = saved_targets
+        self.input_episode_ids = saved_ep_ids
+
+        _, disagree = self.get_rank_probability(sa_t_1, sa_t_2)
+        top_k_index = (-disagree).argsort()[:self.mb_size]
+        r_t_1, sa_t_1 = r_t_1[top_k_index], sa_t_1[top_k_index]
+        r_t_2, sa_t_2 = r_t_2[top_k_index], sa_t_2[top_k_index]
+
+        sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(
+            sa_t_1, sa_t_2, r_t_1, r_t_2)
+        if len(labels) > 0:
+            self.put_queries(sa_t_1, sa_t_2, labels)
+        return len(labels)
+
+    # ── End tandem-mode helpers ──────────────────────────────────────────────
+
     def uniform_sampling(self):
         # get queries
         sa_t_1, sa_t_2, r_t_1, r_t_2 =  self.get_queries(
             mb_size=self.mb_size)
-            
+
         # get labels
         sa_t_1, sa_t_2, r_t_1, r_t_2, labels = self.get_label(
             sa_t_1, sa_t_2, r_t_1, r_t_2)
-        
+
         if len(labels) > 0:
             self.put_queries(sa_t_1, sa_t_2, labels)
-        
+
         return len(labels)
     
     def disagreement_sampling(self):

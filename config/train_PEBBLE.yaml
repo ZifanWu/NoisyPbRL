@@ -58,6 +58,13 @@ save_video: false
 # setups
 seed: 1
 
+# Tandem experiment
+# tandem_mode: baseline | all_passive | passive_pol_active_rm |
+#              active_pol_passive_rm | active_pol_passive_query | active_pol_passive_dist
+tandem_mode: baseline
+# Path to the baseline HDF5 log.  Required for every non-baseline tandem_mode.
+tandem_log_path: null
+
 # Environment
 env: dog_stand
 gradient_update: 1
