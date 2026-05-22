@@ -25,7 +25,7 @@ max_feedback: 1400
 
 # static-SAC specific
 rm_log_interval: 100        # log RM metrics every this many gradient steps (Phase 2)
-traj_cache_dir: /uufs/chpc.utah.edu/common/home/dbrown-group1/zifan/NoisyPbRL/trajectory_cache
+traj_cache_dir: ${oc.env:NOISYPBRL_ROOT,/home/zifan/NoisyPbRL}/trajectory_cache
 
 # environment interaction
 gradient_update: 1
@@ -64,4 +64,4 @@ env: dog_stand
 hydra:
     name: ${env}
     run:
-        dir: /uufs/chpc.utah.edu/common/home/dbrown-group1/zifan/NoisyPbRL/exp/${env}/static_sac/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/maxfeed${max_feedback}_seg${segment}_act${activation}_seed${seed}
+        dir: ${oc.env:NOISYPBRL_EXP_DIR,/home/zifan/NoisyPbRL/exp}/${env}/static_sac/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/maxfeed${max_feedback}_seg${segment}_act${activation}_seed${seed}
