@@ -10,6 +10,8 @@ Public API used by train_PEBBLE.py:
   close()
 """
 
+from __future__ import annotations
+
 import io
 
 import h5py
@@ -75,8 +77,11 @@ class TandemReader:
         grp = self.f["query_events"][f"event_{event_idx}"]["rm_before_train"]
         for member in range(reward_model.de):
             raw = grp[f"member_{member}"][:].tobytes()
-            state_dict = torch.load(io.BytesIO(raw),
-                                    map_location=_DEVICE, weights_only=True)
+            try:
+                state_dict = torch.load(io.BytesIO(raw),
+                                        map_location=_DEVICE, weights_only=True)
+            except TypeError:  # PyTorch < 1.13 doesn't have weights_only
+                state_dict = torch.load(io.BytesIO(raw), map_location=_DEVICE)
             reward_model.ensemble[member].load_state_dict(state_dict)
 
     # ────────────────────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ import torch
 import hydra
 
 import utils
+import sanity_checks
 from logger import Logger
 from replay_buffer import ReplayBuffer
 from reward_model import RewardModel
@@ -145,19 +146,26 @@ class Workspace(object):
         self.tandem_logger = None
         self.tandem_reader = None
 
+        # Canonical filename: same convention on every machine
+        _default_log_path = os.path.join(
+            cfg.tandem_log_dir,
+            f'tandem_baseline_{cfg.env}_seed{cfg.seed}.h5')
+        _log_path = cfg.tandem_log_path if cfg.tandem_log_path is not None \
+            else _default_log_path
+
         if mode == 'baseline':
-            log_path = os.path.join(
-                self.work_dir,
-                f'tandem_baseline_{cfg.env}_seed{cfg.seed}.h5')
+            os.makedirs(cfg.tandem_log_dir, exist_ok=True)
             self.tandem_logger = TandemLogger(
-                log_path, obs_dim, act_dim,
+                _default_log_path, obs_dim, act_dim,
                 max_steps=int(cfg.num_train_steps))
-            print(f'[tandem] baseline logger → {log_path}')
+            print(f'[tandem] baseline logger → {_default_log_path}')
         else:
-            assert cfg.tandem_log_path is not None, \
-                "tandem_log_path must be set for non-baseline tandem_mode"
-            self.tandem_reader = TandemReader(cfg.tandem_log_path)
-            print(f'[tandem] reader ← {cfg.tandem_log_path}  ({self.tandem_reader.num_query_events} events)')
+            if not os.path.exists(_log_path):
+                raise FileNotFoundError(
+                    f"Baseline log not found: {_log_path}\n"
+                    f"Run tandem_mode=baseline first, or pass tandem_log_path=/explicit/path.h5")
+            self.tandem_reader = TandemReader(_log_path)
+            print(f'[tandem] reader ← {_log_path}  ({self.tandem_reader.num_query_events} events)')
 
         # ── Bookkeeping ──────────────────────────────────────────────────────
         self.total_feedback  = 0
@@ -507,6 +515,13 @@ class Workspace(object):
                 self.agent.update_state_ent(
                     self.replay_buffer, self.logger, self.step,
                     gradient_update=1, K=cfg.topK)
+
+            # ── Sanity checks ─────────────────────────────────────────────
+            if cfg.sanity_mode and mode != 'baseline':
+                sanity_checks.run_checks(
+                    mode, self.tandem_reader, self.reward_model,
+                    self.replay_buffer, self.step, self._rm_update_idx,
+                    check_interval=cfg.sanity_check_interval)
 
             # ── Advance ───────────────────────────────────────────────────
             if mode not in _PASSIVE_POLICY:

@@ -9,362 +9,14 @@
 conda env create -f conda_env.yml
 conda activate bpref
 
-# Install stable-baselines3 (used by PPO scripts)
-pip install -e .[docs,tests,extra]
-
-# Install the local dm_control and gym wrappers
 cd custom_dmc2gym && pip install -e . && cd ..
 cd Metaworld-2.0.0 && pip install -e . && cd ..
 ```
 
 > **Note on MuJoCo:** This repo uses the open-source `mujoco` pip package (3.x) and
-> `dm-control` 1.x, replacing the proprietary MuJoCo 2.0 binaries required by the
-> original B-Pref codebase. Physics simulation differs from MuJoCo 2.0, so absolute
-> reward numbers will not match the original paper — but algorithm comparisons within
-> this setup are internally consistent.
-
-
-## Logging
-
-Results are logged to [Weights & Biases](https://wandb.ai) by default.
-Log in once before running experiments:
-
-```bash
-wandb login
-```
-
-To disable wandb and fall back to CSV-only logging:
-
-```bash
-python train_SAC.py ... use_wandb=false
-```
-
-To use TensorBoard instead of (or alongside) wandb:
-
-```bash
-python train_SAC.py ... log_save_tb=true
-```
-
-## Run experiments using GT rewards
-
-### SAC & SAC + unsupervised pre-training
-
-```bash
-./scripts/[env_name]/run_sac.sh
-./scripts/[env_name]/run_sac_unsuper.sh
-```
-
-### PPO & PPO + unsupervised pre-training
-
-```bash
-./scripts/[env_name]/run_ppo.sh
-./scripts/[env_name]/run_ppo_unsuper.sh
-```
-
-## GPU selection
-
-Use the `gpu` flag to select which GPU to run on (default: `0`):
-
-```bash
-python train_SAC.py env=quadruped_walk gpu=1 ...
-```
-
-This sets the training device to `cuda:1`. The same flag works for all train scripts.
-
-## Run experiments on irrational teacher
-
-To design more realistic models of human teachers, we consider a common stochastic
-model and systematically manipulate its terms and operators:
-
-```
-teacher_beta: rationality constant of stochastic preference model (default: -1 for perfectly rational model)
-teacher_gamma: discount factor to model myopic behavior (default: 1)
-teacher_eps_mistake: probability of making a mistake (default: 0)
-teacher_eps_skip: hyperparameters to control skip threshold (\in [0,1])
-teacher_eps_equal: hyperparameters to control equal threshold (\in [0,1])
-```
-
-In B-Pref, we tried the following teachers:
-
-`Oracle teacher`: (teacher_beta=-1, teacher_gamma=1, teacher_eps_mistake=0, teacher_eps_skip=0, teacher_eps_equal=0)
-
-`Mistake teacher`: (teacher_beta=-1, teacher_gamma=1, teacher_eps_mistake=0.1, teacher_eps_skip=0, teacher_eps_equal=0)
-
-`Noisy teacher`: (teacher_beta=1, teacher_gamma=1, teacher_eps_mistake=0, teacher_eps_skip=0, teacher_eps_equal=0)
-
-`Skip teacher`: (teacher_beta=-1, teacher_gamma=1, teacher_eps_mistake=0, teacher_eps_skip=0.1, teacher_eps_equal=0)
-
-`Myopic teacher`: (teacher_beta=-1, teacher_gamma=0.9, teacher_eps_mistake=0, teacher_eps_skip=0, teacher_eps_equal=0)
-
-`Equal teacher`: (teacher_beta=-1, teacher_gamma=1, teacher_eps_mistake=0, teacher_eps_skip=0, teacher_eps_equal=0.1)
-
-### PEBBLE
-
-```bash
-./scripts/[env_name]/[teacher_type]/[max_budget]/run_PEBBLE.sh [sampling_scheme: 0=uniform, 1=disagreement, 2=entropy]
-```
-
-### PEBBLE + RUNE (reward uncertainty exploration bonus)
-
-`train_PEBBLE_explore.py` adds an intrinsic exploration bonus equal to the **std of the reward model ensemble** scaled by a decaying β coefficient. The exploration buffer tracks extrinsic and intrinsic rewards separately.
-
-```bash
-# walker_walk, oracle teacher, 100 feedback pairs, disagreement sampling
-CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_explore.py \
-    env=walker_walk seed=12345 \
-    agent.params.actor_lr=0.0005 agent.params.critic_lr=0.0005 \
-    gradient_update=1 activation=tanh \
-    num_unsup_steps=9000 num_train_steps=500000 \
-    num_interact=20000 max_feedback=100 reward_batch=10 reward_update=50 \
-    feed_type=1 \
-    teacher_beta=-1 teacher_gamma=1 \
-    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
-    agent.params.beta_schedule=linear_decay agent.params.beta_init=0.05 agent.params.beta_decay=0.00001
-
-# metaworld_hammer-v2, oracle teacher, 10000 feedback pairs
-CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_explore.py \
-    env=metaworld_hammer-v2 seed=12345 \
-    agent.params.actor_lr=0.0003 agent.params.critic_lr=0.0003 \
-    gradient_update=1 activation=tanh num_unsup_steps=9000 num_train_steps=2000000 \
-    agent.params.batch_size=512 \
-    double_q_critic.params.hidden_dim=256 double_q_critic.params.hidden_depth=3 \
-    diag_gaussian_actor.params.hidden_dim=256 diag_gaussian_actor.params.hidden_depth=3 \
-    reward_update=10 num_interact=5000 max_feedback=10000 reward_batch=50 \
-    feed_type=1 \
-    teacher_beta=-1 teacher_gamma=1 \
-    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0
-```
-
-Key RUNE hyperparameters (set in config or command line):
-
-| Parameter | Default | Description |
-|---|---|---|
-| `agent.params.beta_schedule` | `linear_decay` | Schedule for exploration bonus weight (`constant` or `linear_decay`) |
-| `agent.params.beta_init` | `0.05` | Initial β for exploration bonus |
-| `agent.params.beta_decay` | `0.00001` | Per-step multiplicative decay of β |
-
-### SURF (semi-supervised reward learning with data augmentation)
-
-`train_PEBBLE_semi_dataaug.py` improves reward model sample efficiency by:
-
-1. collecting `inv_label_ratio × mb_size` **unlabeled** queries each round in addition to labeled ones
-2. training with pseudo-labels above `threshold_u` confidence and temporal crop augmentation
-
-```bash
-# walker_walk, oracle teacher, 100 feedback pairs
-CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_semi_dataaug.py \
-    env=walker_walk seed=12345 \
-    agent.params.actor_lr=0.0005 agent.params.critic_lr=0.0005 \
-    gradient_update=1 activation=tanh \
-    num_unsup_steps=9000 num_train_steps=500000 \
-    num_interact=20000 max_feedback=100 reward_batch=10 \
-    inv_label_ratio=100 reward_update=1000 \
-    feed_type=1 \
-    teacher_beta=-1 teacher_gamma=1 \
-    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
-    threshold_u=0.99 mu=4
-
-# metaworld_hammer-v2, oracle teacher, 10000 feedback pairs
-CUDA_VISIBLE_DEVICES=0 python train_PEBBLE_semi_dataaug.py \
-    env=metaworld_hammer-v2 seed=12345 \
-    agent.params.actor_lr=0.0003 agent.params.critic_lr=0.0003 \
-    gradient_update=1 activation=tanh num_unsup_steps=9000 num_train_steps=2000000 \
-    agent.params.batch_size=512 \
-    double_q_critic.params.hidden_dim=256 double_q_critic.params.hidden_depth=3 \
-    diag_gaussian_actor.params.hidden_dim=256 diag_gaussian_actor.params.hidden_depth=3 \
-    reward_update=20 num_interact=5000 max_feedback=10000 reward_batch=50 \
-    feed_type=1 \
-    teacher_beta=-1 teacher_gamma=1 \
-    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
-    threshold_u=0.99 mu=4 inv_label_ratio=10
-```
-
-Key SURF hyperparameters:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `inv_label_ratio` | `10` | Ratio of unlabeled to labeled queries collected each round |
-| `threshold_u` | `0.95` | Confidence threshold for pseudo-label acceptance |
-| `mu` | `1` | Unlabeled batch size multiplier relative to labeled batch |
-| `lambda_u` | `1` | Weight of the pseudo-label loss term |
-| `dataaug_window` | `5` | Half-window added to each side of segment for temporal cropping |
-| `crop_range` | `5` | ±range for random crop length around the original segment size |
-
-### PrefPPO
-
-```bash
-./scripts/[env_name]/[teacher_type]/[max_budget]/run_PrefPPO.sh [sampling_scheme: 0=uniform, 1=disagreement, 2=entropy]
-```
-
-### Static SAC
-
-```bash
-./scripts/[env_name]/[max_budget]/[teacher_type]/run_static_SAC.sh [gpu_id]
-```
-
-`run_static_SAC.sh` does not take a `sampling_scheme` argument because the reward
-model is always trained offline with uniform sampling.
-
-## Static SAC — three-phase offline-then-online pipeline
-
-`train_static_sac.py` implements a decoupled baseline for preference-based RL:
-
-1. **Phase 1 — Data collection (SAC with ground-truth rewards)**  
-   Runs a standard SAC agent with true environment rewards for `num_train_steps`
-   steps and records every completed episode as a raw trajectory (observation–action
-   concatenations and true rewards, one array per episode).  
-   The trajectory pool is cached at:
-
-   ```text
-   trajectory_cache/{env}/seed{seed}/trajectories.pkl
-   ```
-
-   The cache key is `(env, seed)` only — teacher parameters do not affect data
-   collection, so re-running with a different teacher reuses the same trajectories
-   automatically without re-running Phase 1.
-
-2. **Phase 2 — Offline reward-model training**  
-   Loads the cached trajectory pool into the reward model, generates `max_feedback`
-   labelled preference pairs in one shot using uniform sampling, then trains the
-   ensemble reward model.  
-   Stopping criterion (same as each PEBBLE round): up to `reward_update` epochs,
-   early-stop when accuracy exceeds 0.97.  
-   The reward model is **fixed** after this phase — no further updates.  
-   Teacher behavior (rational / noisy / myopic / skip / mistake / equal) is
-   determined by the same `teacher_*` parameters as PEBBLE.
-
-3. **Phase 3 — Online policy training with fixed reward model**  
-   Initialises a fresh SAC agent and an empty replay buffer, then interacts with
-   the environment using the fixed reward model's predicted rewards in place of
-   true rewards.  Logs both `train/episode_reward` (RM-predicted) and
-   `train/true_episode_reward` (ground-truth) for comparison.
-
-### Configuration
-
-The config file is `config/train_static_sac.yaml`.  Key parameters beyond the
-shared SAC/teacher ones:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `rm_log_interval` | `5000` | Log RM metrics (dormant rate, feature rank, BT weights) every this many gradient steps during Phase 2 |
-| `traj_cache_dir` | `trajectory_cache` | Root directory for trajectory caches, relative to the project root |
-| `max_feedback` | `1400` | Number of preference pairs generated for offline RM training |
-
-### Running a single experiment
-
-```bash
-# quadruped_walk, noisy teacher, 2000 feedback pairs, GPU 1
-seed=12345 python train_static_sac.py \
-    use_wandb=true gpu=1 \
-    env=quadruped_walk seed=$seed \
-    agent.params.actor_lr=0.0001 agent.params.critic_lr=0.0001 \
-    gradient_update=1 activation=tanh \
-    num_unsup_steps=9000 num_train_steps=1000000 \
-    max_feedback=2000 reward_batch=200 reward_update=50 \
-    teacher_beta=1 teacher_gamma=1 \
-    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0
-```
-
-### Script directory layout
-
-```text
-scripts/
-  {quadruped_walk, button_press, sweep_into}/
-    {1000|2000, 10000|20000}/          ← max_feedback budget
-      {oracle, noisy, myopic, skip, mistake, equal}/
-        run_static_SAC.sh
-```
-
-Feedback budgets and per-environment hyper-parameters match those of the
-corresponding PEBBLE scripts.
-
-## Scripts overview
-
-All run scripts live under `scripts/` and follow the layout:
-
-```text
-scripts/
-  {env}/
-    {max_feedback}/
-      {teacher}/
-        run_PEBBLE.sh        [feed_type] [gpu]
-        run_RUNE.sh          [feed_type] [gpu]
-        run_SURF.sh          [feed_type] [gpu]
-        run_PrefPPO.sh       [feed_type] [gpu]
-        run_static_SAC.sh    [gpu]
-```
-
-`$1` selects the query sampling scheme (0 = uniform, 1 = disagreement, 2 = entropy).
-`$2` selects the GPU (default: 0).
-
-### Environments
-
-| Env directory | Gym / DMC id | Algorithms |
-|---|---|---|
-| `button_press` | `metaworld_button-press-v2` | PEBBLE, RUNE, SURF, PrefPPO, Static SAC |
-| `sweep_into` | `metaworld_sweep-into-v2` | PEBBLE, RUNE, SURF, PrefPPO, Static SAC |
-| `walker_walk` | `walker_walk` | PEBBLE, RUNE, SURF, PrefPPO |
-| `quadruped_walk` | `quadruped_walk` | PEBBLE, RUNE, SURF, PrefPPO, Static SAC |
-| `hammer` | `metaworld_hammer-v2` | PEBBLE, RUNE, SURF, PrefPPO |
-| `door_close` | `metaworld_door-close-v2` | PEBBLE, RUNE, SURF, PrefPPO |
-| `door_open` | `metaworld_door-open-v2` | PEBBLE, RUNE, SURF, PrefPPO |
-| `door_unlock` | `metaworld_door-unlock-v2` | PEBBLE, RUNE, SURF, PrefPPO |
-| `drawer_open` | `metaworld_drawer-open-v2` | PEBBLE, RUNE, SURF, PrefPPO |
-| `window_close` | `metaworld_window-close-v2` | PEBBLE, RUNE, SURF, PrefPPO |
-
-## PEBBLE + RM Reset — online PbRL with per-round reward model re-initialisation
-
-`train_PEBBLE.py` with `rm_reset=true` adds a single behavioural change to the
-standard PEBBLE loop: the reward model's weights and optimizer are re-initialised
-from scratch at the start of every reward learning round **after the first**.
-
-### RM Reset — configuration
-
-Set `rm_reset=true` on the command line or in `config/train_PEBBLE.yaml`:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `rm_reset` | `false` | Re-initialise reward model weights and optimizer before each reward learning round (excluding the first) |
-
-### RM Reset — running
-
-```bash
-./scripts/[env_name]/[teacher_type]/[max_budget]/run_PEBBLE.sh [sampling_scheme] [gpu_id] rm_reset=true
-```
-
-Or inline:
-
-```bash
-# button_press, noisy teacher, 20 000 feedback pairs, GPU 0, disagreement sampling
-seed=12345 python train_PEBBLE.py \
-    use_wandb=true gpu=0 \
-    env=metaworld_button-press-v2 seed=$seed \
-    agent.params.actor_lr=0.0003 agent.params.critic_lr=0.0003 \
-    gradient_update=1 activation=tanh \
-    num_unsup_steps=9000 num_train_steps=1000000 \
-    agent.params.batch_size=512 \
-    double_q_critic.params.hidden_dim=256 double_q_critic.params.hidden_depth=3 \
-    diag_gaussian_actor.params.hidden_dim=256 diag_gaussian_actor.params.hidden_depth=3 \
-    reward_update=10 num_interact=5000 max_feedback=20000 reward_batch=100 \
-    feed_type=1 \
-    teacher_beta=1 teacher_gamma=1 \
-    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0 \
-    rm_reset=true
-```
-
-### Implementation
-
-The reset is a two-liner in `RewardModel` (`reward_model.py`):
-
-```python
-def reset_ensemble(self):
-    self.ensemble = []
-    self.paramlst = []
-    self.construct_ensemble()
-```
-
-Called in `learn_reward()` (`train_PEBBLE.py`) after feedback collection and
-before the training loop, conditioned on `cfg.rm_reset and first_flag != 1`.
+> `dm-control` 1.x. Physics simulation differs from MuJoCo 2.0, so absolute reward
+> numbers will not match prior papers — but algorithm comparisons within this setup
+> are internally consistent.
 
 ## Dependency versions (tested)
 
@@ -373,8 +25,161 @@ before the training loop, conditioned on `cfg.rm_reset and first_flag != 1`.
 | Python | 3.8 |
 | PyTorch | 2.4.1 |
 | CUDA toolkit | 12.4 |
-| intel-openmp / MKL | 2023.1.0 |
 | mujoco | 3.2.3 |
 | dm-control | 1.0.23 |
 | gym | 0.26.2 |
 | wandb | 0.24.2 |
+
+## Logging
+
+```bash
+wandb login          # log in once; set use_wandb=false to fall back to CSV
+```
+
+---
+
+## Tandem experiments
+
+The tandem experiment disentangles the contribution of policy activeness, query strategy
+activeness, and reward-model data-distribution activeness in iterative PbRL.
+All conditions run through `train_PEBBLE.py` with a single `tandem_mode` flag.
+
+### Conditions
+
+| `tandem_mode` | Policy data | RM preference data | Query scorer |
+|---|---|---|---|
+| `baseline` | own env | own segments (disagreement) | self RM |
+| `all_passive` | baseline replay | baseline pairs | — |
+| `passive_pol_active_rm` | baseline replay | own segments | self RM |
+| `active_pol_passive_rm` | own env | baseline pairs | — |
+| `active_pol_passive_query` | own env | own segments | baseline RM |
+| `active_pol_passive_dist` | own env | baseline segment pool | self RM |
+
+### Step 1 — Run the baseline
+
+The baseline run must come first; it logs the full replay buffer, preference pairs, RM
+checkpoints, and episode metadata to a single HDF5 file that all tandem conditions read.
+
+```bash
+python train_PEBBLE.py \
+    env=walker_walk seed=1 \
+    tandem_mode=baseline \
+    agent.params.actor_lr=0.0005 agent.params.critic_lr=0.0005 \
+    gradient_update=1 activation=tanh \
+    num_seed_steps=1000 num_unsup_steps=5000 num_train_steps=500000 \
+    num_interact=5000 max_feedback=500 reward_batch=50 reward_update=200 \
+    feed_type=1 \
+    teacher_beta=-1 teacher_gamma=1 \
+    teacher_eps_mistake=0 teacher_eps_skip=0 teacher_eps_equal=0
+```
+
+The HDF5 log is written to the Hydra output directory under
+`tandem_baseline_{env}_seed{seed}.h5`. Pass its full path to all tandem conditions
+via `tandem_log_path=`.
+
+### Step 2 — Run each tandem condition
+
+All conditions use **identical hyperparameters** to the baseline. The only differences
+are `tandem_mode` and `tandem_log_path`.
+
+```bash
+LOG=/path/to/tandem_baseline_walker_walk_seed1.h5
+
+# (i) All passive
+python train_PEBBLE.py env=walker_walk seed=1 tandem_mode=all_passive \
+    tandem_log_path=$LOG <...same hyperparams as baseline...>
+
+# (ii) Passive policy, active RM
+python train_PEBBLE.py env=walker_walk seed=1 tandem_mode=passive_pol_active_rm \
+    tandem_log_path=$LOG <...same hyperparams...>
+
+# (iii) Active policy, passive RM
+python train_PEBBLE.py env=walker_walk seed=1 tandem_mode=active_pol_passive_rm \
+    tandem_log_path=$LOG <...same hyperparams...>
+
+# (iv-a) Active policy, passive query (tandem pool scored by baseline RM)
+python train_PEBBLE.py env=walker_walk seed=1 tandem_mode=active_pol_passive_query \
+    tandem_log_path=$LOG <...same hyperparams...>
+
+# (iv-b) Active policy, passive data distribution (baseline pool scored by tandem RM)
+python train_PEBBLE.py env=walker_walk seed=1 tandem_mode=active_pol_passive_dist \
+    tandem_log_path=$LOG <...same hyperparams...>
+```
+
+### Teacher types
+
+Three synthetic teachers from B-Pref are supported. Fix `seed` and teacher
+hyperparameters identically across all conditions for a fair comparison.
+
+| Teacher | `teacher_beta` | `teacher_gamma` | `teacher_eps_mistake` | `teacher_eps_skip` | `teacher_eps_equal` |
+|---|---|---|---|---|---|
+| Oracle | -1 | 1 | 0 | 0 | 0 |
+| Stochastic | 1 | 1 | 0 | 0 | 0 |
+| Mistake | -1 | 1 | 0.1 | 0 | 0 |
+
+### GPU selection
+
+```bash
+python train_PEBBLE.py ... gpu=1    # uses cuda:1
+```
+
+### Key hyperparameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `num_seed_steps` | 1000 | Random-action warm-up steps |
+| `num_unsup_steps` | 5000 | State-entropy unsupervised exploration steps |
+| `num_interact` | 5000 | Env steps between RM update rounds |
+| `max_feedback` | 1400 | Total preference-label budget |
+| `reward_batch` | 128 | Labels queried per RM update round |
+| `reward_update` | 200 | Max RM gradient steps per round (early-stop at acc > 0.97) |
+| `feed_type` | 1 | Query strategy (1 = disagreement; all tandem experiments use 1) |
+| `large_batch` | 10 | Candidate pool multiplier for disagreement sampling |
+| `segment` | 50 | Trajectory segment length (timesteps) |
+| `ensemble_size` | 3 | Number of RM ensemble members |
+| `rm_reset` | false | Re-initialise RM weights before each update round (except the first) |
+
+### What the baseline log contains
+
+The HDF5 file written by `tandem_mode=baseline` stores everything needed to replay
+the run deterministically in any tandem condition:
+
+- **`replay_buffer/`** — full (obs, action, env_reward, next_obs, done) stream indexed by env step
+- **`episodes/`** — (episode_id, start_step, length) pointers for pool reconstruction
+- **`query_events/event_k/`** — per RM update round:
+  - `pool_episode_ids` — which episodes were in the segment pool when querying
+  - `rm_before_train/member_{0,1,2}` — RM weights before training (used as scorer in condition iv-a)
+  - `sa_t_1`, `sa_t_2`, `r_t_1`, `r_t_2`, `labels`, `disagree_scores` — selected pairs and labels
+- **`schedule/`** — `change_batch()` calls (env_step, frac, mb_size)
+
+### Implementation notes
+
+**Data routing.** Three module-level sets in `train_PEBBLE.py` govern routing without
+nested if-else trees:
+
+```python
+_PASSIVE_POLICY   = {"all_passive", "passive_pol_active_rm"}
+_PASSIVE_RM_PAIRS = {"all_passive", "active_pol_passive_rm"}
+_ACTIVE_RM_DATA   = {"baseline", "passive_pol_active_rm", "active_pol_passive_query"}
+```
+
+**Condition ii (passive_pol_active_rm).** A second environment handle (`_tandem_env`)
+is created for RM data collection. The policy's SAC gradient updates use baseline
+transitions from the log; the policy's *behavioral* outputs (for the RM segment pool)
+come from `_tandem_env`. During the unsupervised phase both data streams mirror
+condition (i) — the RM part is moot until RM training begins.
+
+**Condition iv-a (active_pol_passive_query).** A scratch `RewardModel` instance
+(`_baseline_rm_helper`) is populated from the logged RM checkpoint before each query
+event and used only to score candidate pairs drawn from the tandem's own segment pool.
+
+**Condition iv-b (active_pol_passive_dist).** `TandemReader.reconstruct_episode_pool`
+rebuilds the baseline's rolling episode window from (start_step, length) pointers into
+the logged replay buffer. These episodes are passed to
+`RewardModel.disagreement_sampling_external_pool`, which temporarily swaps `self.inputs`
+for querying and restores it immediately after.
+
+**Relabeling invariant.** In every condition, `replay_buffer.relabel_with_predictor`
+always uses the *tandem* RM — never the baseline RM. This is enforced architecturally:
+the baseline RM is only ever loaded into `_baseline_rm_helper` and never replaces
+`self.reward_model`.

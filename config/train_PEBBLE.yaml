@@ -62,15 +62,25 @@ seed: 1
 # tandem_mode: baseline | all_passive | passive_pol_active_rm |
 #              active_pol_passive_rm | active_pol_passive_query | active_pol_passive_dist
 tandem_mode: baseline
-# Path to the baseline HDF5 log.  Required for every non-baseline tandem_mode.
+# Directory where baseline HDF5 logs are stored.
+# Override with tandem_log_dir=/your/path on any machine.
+tandem_log_dir: ${exp_dir}/tandem_logs
+# Explicit path override (optional).  If null, auto-derived as
+# {tandem_log_dir}/tandem_baseline_{env}_seed{seed}.h5
 tandem_log_path: null
+# Set to true to enable SC2/SC3 routing invariant checks every sanity_check_interval steps.
+sanity_mode: false
+sanity_check_interval: 2000
 
 # Environment
 env: dog_stand
 gradient_update: 1
 
+# Base output directory (override on CLI with exp_dir=/your/path)
+exp_dir: /home/zifan/NoisyPbRL/exp
+
 # hydra configuration
 hydra:
     name: ${env}
     run:
-        dir: ${oc.env:NOISYPBRL_EXP_DIR,/home/zifan/NoisyPbRL/exp}/${env}/H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_lr${agent.params.actor_lr}/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/label_smooth_${label_margin}/schedule_${reward_schedule}/${experiment}_init${num_seed_steps}_unsup${num_unsup_steps}_inter${num_interact}_maxfeed${max_feedback}_seg${segment}_act${activation}_Rlr${reward_lr}_Rbatch${reward_batch}_Rupdate${reward_update}_en${ensemble_size}_sample${feed_type}_large_batch${large_batch}_rm${rm_reset}_seed${seed}
+        dir: ${exp_dir}/${env}/H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_lr${agent.params.actor_lr}/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/label_smooth_${label_margin}/schedule_${reward_schedule}/tandem_${tandem_mode}/${experiment}_init${num_seed_steps}_unsup${num_unsup_steps}_inter${num_interact}_maxfeed${max_feedback}_seg${segment}_act${activation}_Rlr${reward_lr}_Rbatch${reward_batch}_Rupdate${reward_update}_en${ensemble_size}_sample${feed_type}_large_batch${large_batch}_rm${rm_reset}_seed${seed}
