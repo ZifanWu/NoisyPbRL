@@ -49,7 +49,7 @@ class Workspace(object):
         if cfg.use_wandb:
             import socket, wandb
             wandb.init(
-                project='NoisyPbRL',
+                project='pbrl_gauge_ambiguity',
                 name=f'{cfg.env}__{cfg.agent.name}__seed{cfg.seed}__{mode}',
                 config=dict(cfg),
                 notes=socket.gethostname(),
@@ -120,7 +120,8 @@ class Workspace(object):
             bt_log_period=cfg.bt_log_period,
             log_extra_metrics=cfg.log_extra_metrics,
             feed_type=cfg.feed_type,
-            capacity=cfg.max_feedback * cfg.large_batch)
+            capacity=cfg.max_feedback * cfg.large_batch,
+            gauge_mode=cfg.gauge_mode)
 
         # For condition iv-a: a scratch RewardModel that receives baseline RM
         # weights loaded from the log, used only to score candidate pairs.
@@ -178,6 +179,55 @@ class Workspace(object):
         self._ep_id          = 0
         self._ep_start_step  = 0
 
+        # ── Gauge experiment: on-policy eval env (baseline mode only) ────────
+        # [Gauge experiment, Step 3] A separate env is used to collect fresh
+        # on-policy segments without perturbing the training env's RNG state.
+        self._gauge_eval_env = None
+        self._gauge_obs      = None
+        self._ref_segments_collected = False
+        if cfg.tandem_mode == 'baseline':
+            if 'metaworld' in cfg.env:
+                self._gauge_eval_env = utils.make_metaworld_env(cfg)
+            else:
+                self._gauge_eval_env = utils.make_env(cfg)
+            self._gauge_obs = self._gauge_eval_env.reset()
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Gauge experiment helpers
+    # ────────────────────────────────────────────────────────────────────────
+
+    def _collect_on_policy_segments(self, n_segs: int) -> np.ndarray:
+        """Collect n_segs contiguous segments from the gauge eval env.
+
+        [Gauge experiment, Step 3] Uses deterministic (sample=False) policy actions
+        and the persistent _gauge_eval_env so RNG state in the training env is not
+        disturbed.  Episode boundaries are handled by resetting the env; a segment
+        may span a boundary, which is acceptable since the RM treats each timestep
+        independently.
+
+        Args:
+            n_segs: number of segments of length cfg.segment to collect.
+
+        Returns:
+            numpy array of shape (n_segs, cfg.segment, obs_dim + act_dim).
+        """
+        seg_len   = self.cfg.segment
+        obs_dim   = self.env.observation_space.shape[0]
+        act_dim   = self.env.action_space.shape[0]
+        total     = n_segs * seg_len
+        flat_buf  = np.zeros((total, obs_dim + act_dim), dtype=np.float32)
+
+        obs = self._gauge_obs
+        with utils.eval_mode(self.agent):
+            for t in range(total):
+                action = self.agent.act(obs, sample=False)
+                flat_buf[t] = np.concatenate([obs, action])
+                next_obs, _, terminated, truncated, _ = self._gauge_eval_env.step(action)
+                done = terminated or truncated
+                obs  = self._gauge_eval_env.reset() if done else next_obs
+        self._gauge_obs = obs
+        return flat_buf.reshape(n_segs, seg_len, obs_dim + act_dim)
+
     # ────────────────────────────────────────────────────────────────────────
     # Evaluation
     # ────────────────────────────────────────────────────────────────────────
@@ -185,20 +235,29 @@ class Workspace(object):
     def evaluate(self):
         average_episode_reward      = 0
         average_true_episode_reward = 0
-        success_rate                = 0
+        # [Gauge experiment, Step 3+5] Proxy return: RM-predicted episode return.
+        # NOTE: proxy and true returns are on different scales (RM is not normalized)
+        # and are NOT directly comparable in magnitude — compare them only as
+        # trends over training, not as absolute values.
+        average_proxy_episode_reward = 0
+        success_rate                 = 0
 
         for episode in range(self.cfg.num_eval_episodes):
             obs  = self.env.reset()
             self.agent.reset()
             done = False
-            episode_reward      = 0
-            true_episode_reward = 0
+            episode_reward       = 0
+            true_episode_reward  = 0
+            proxy_episode_reward = 0
+            # collect per-step (obs, action) for batch proxy-reward evaluation
+            _traj_sa: list = []
             if self.log_success:
                 episode_success = 0
 
             while not done:
                 with utils.eval_mode(self.agent):
                     action = self.agent.act(obs, sample=False)
+                _traj_sa.append(np.concatenate([obs, action]).astype(np.float32))
                 obs, reward, terminated, truncated, extra = self.env.step(action)
                 done = terminated or truncated
                 episode_reward      += reward
@@ -206,15 +265,27 @@ class Workspace(object):
                 if self.log_success:
                     episode_success = max(episode_success, extra['success'])
 
-            average_episode_reward      += episode_reward
-            average_true_episode_reward += true_episode_reward
+            # [Gauge experiment, Step 5] Batch proxy return computation.
+            if _traj_sa:
+                sa_batch = np.stack(_traj_sa)                # (T, ds+da)
+                # r_hat_batch returns (T, 1) or (T,) averaged over ensemble members
+                proxy_rewards = self.reward_model.r_hat_batch(sa_batch)
+                proxy_episode_reward = float(proxy_rewards.sum())
+
+            average_episode_reward       += episode_reward
+            average_true_episode_reward  += true_episode_reward
+            average_proxy_episode_reward += proxy_episode_reward
             if self.log_success:
                 success_rate += episode_success
 
-        average_episode_reward      /= self.cfg.num_eval_episodes
-        average_true_episode_reward /= self.cfg.num_eval_episodes
+        average_episode_reward       /= self.cfg.num_eval_episodes
+        average_true_episode_reward  /= self.cfg.num_eval_episodes
+        average_proxy_episode_reward /= self.cfg.num_eval_episodes
         self.logger.log('eval/episode_reward',      average_episode_reward,      self.step)
         self.logger.log('eval/true_episode_reward', average_true_episode_reward, self.step)
+        self.logger.log('eval/proxy_return',        average_proxy_episode_reward, self.step)
+        self.logger.log('eval/return_gap',
+                        average_proxy_episode_reward - average_true_episode_reward, self.step)
         if self.log_success:
             success_rate = success_rate / self.cfg.num_eval_episodes * 100.0
             self.logger.log('eval/success_rate',        success_rate, self.step)
@@ -304,6 +375,18 @@ class Workspace(object):
         else:
             raise ValueError(f"Unknown tandem_mode: {mode!r}")
 
+        # [Gauge experiment, Step 3] Collect on-policy segments for diagnostics.
+        # Done in baseline mode only, before RM training so the collection policy
+        # matches the current policy state (RM training doesn't change the policy).
+        _D_current = None
+        if mode == 'baseline' and self._gauge_eval_env is not None:
+            if first_flag == 1 and not self._ref_segments_collected:
+                # Freeze reference set from the initial (unsup-pretrained) policy.
+                _D_ref = self._collect_on_policy_segments(256)
+                self.reward_model.set_ref_segments(_D_ref)
+                self._ref_segments_collected = True
+            _D_current = self._collect_on_policy_segments(64)
+
         self.total_feedback   += self.reward_model.mb_size
         self.labeled_feedback += labeled_queries
 
@@ -323,6 +406,12 @@ class Workspace(object):
 
         print(f"Reward function updated (event {idx})  ACC: {total_acc:.4f}")
         self.logger.log('train/reward_model_acc', total_acc, self.step)
+
+        # [Gauge experiment, Step 2] Log gauge diagnostics after RM training.
+        if _D_current is not None:
+            gauge_metrics = self.reward_model.get_gauge_diagnostics(_D_current)
+            for key, value in gauge_metrics.items():
+                self.logger.log(key, value, self.step)
 
         if mode == 'baseline':
             self.tandem_logger.flush()

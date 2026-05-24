@@ -28,6 +28,14 @@ teacher_eps_equal: 0
 
 rm_reset: false
 
+# Gauge-ambiguity experiment
+# [Gauge experiment, Step 1] Controls RM optimizer regularization and post-step
+# projection.  "l2": Adam weight_decay=1e-4 (standard RLHF)  "none": wd=0 (current
+# BPref default, no regularization)  "zero_mean_ref": wd=0 + zero-mean projection
+# on frozen reference segments collected at first RM training event.
+# Default "l2" — run with gauge_mode=none or gauge_mode=zero_mean_ref to compare.
+gauge_mode: l2
+
 # scheduling
 reward_schedule: 0
 
@@ -84,4 +92,4 @@ exp_dir: /home/zifan/NoisyPbRL/exp
 hydra:
     name: ${env}
     run:
-        dir: ${exp_dir}/${env}/H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_lr${agent.params.actor_lr}/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/label_smooth_${label_margin}/schedule_${reward_schedule}/tandem_${tandem_mode}/${experiment}_init${num_seed_steps}_unsup${num_unsup_steps}_inter${num_interact}_maxfeed${max_feedback}_seg${segment}_act${activation}_Rlr${reward_lr}_Rbatch${reward_batch}_Rupdate${reward_update}_en${ensemble_size}_sample${feed_type}_large_batch${large_batch}_rm${rm_reset}_seed${seed}
+        dir: ${exp_dir}/${env}/H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_lr${agent.params.actor_lr}/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/label_smooth_${label_margin}/schedule_${reward_schedule}/tandem_${tandem_mode}/gauge_${gauge_mode}/${experiment}_init${num_seed_steps}_unsup${num_unsup_steps}_inter${num_interact}_maxfeed${max_feedback}_seg${segment}_act${activation}_Rlr${reward_lr}_Rbatch${reward_batch}_Rupdate${reward_update}_en${ensemble_size}_sample${feed_type}_large_batch${large_batch}_rm${rm_reset}_seed${seed}

@@ -95,7 +95,8 @@ class RewardModel:
                  use_wandb=False,
                  bt_log_period=5000,
                  log_extra_metrics=False,
-                 feed_type=0):
+                 feed_type=0,
+                 gauge_mode: str = "l2"):
         
         # train data is trajectories, must process to sa and s..   
         self.ds = ds
@@ -109,7 +110,12 @@ class RewardModel:
         self.max_size = max_size
         self.activation = activation
         self.size_segment = size_segment
-        
+        # [Gauge experiment, Step 1] gauge_mode controls optimizer regularization and
+        # post-step projection. Must be set before construct_ensemble() creates the optimizer.
+        # "l2": weight_decay=1e-4  "none": weight_decay=0  "zero_mean_ref": wd=0 + projection
+        self.gauge_mode = gauge_mode
+        self.ref_segments = None  # frozen np.ndarray (N_ref, T, ds+da), set once
+
         self.capacity = int(capacity)
         self.buffer_seg1 = np.empty((self.capacity, size_segment, self.ds+self.da), dtype=np.float32)
         self.buffer_seg2 = np.empty((self.capacity, size_segment, self.ds+self.da), dtype=np.float32)
@@ -429,13 +435,100 @@ class RewardModel:
             self.ensemble.append(model)
             self.paramlst.extend(model.parameters())
 
-        self.opt = torch.optim.Adam(self.paramlst, lr = self.lr)
+        # [Gauge experiment, Step 1] Mode A uses ℓ2 weight decay; modes B and none do not.
+        _wd = 1e-4 if self.gauge_mode == "l2" else 0.0
+        self.opt = torch.optim.Adam(self.paramlst, lr=self.lr, weight_decay=_wd)
 
     def reset_ensemble(self):
         self.ensemble = []
         self.paramlst = []
         self.construct_ensemble()
-            
+
+    # ── Gauge-ambiguity experiment helpers ──────────────────────────────────
+
+    def set_ref_segments(self, segments: np.ndarray) -> None:
+        """Freeze the reference segment buffer used by gauge Mode B and diagnostics.
+
+        [Gauge experiment, Step 1] Called once at the first RM training event with
+        segments collected from the initial (unsup-pretrained) policy.  Never updated
+        thereafter — this is the frozen π_ref data distribution.
+
+        Args:
+            segments: numpy array of shape (N_ref, size_segment, ds+da).
+        """
+        self.ref_segments = segments.copy()
+
+    def _apply_zero_mean_projection(self) -> None:
+        """Project each ensemble member so its mean reward on D_ref is zero.
+
+        [Gauge experiment, Step 1] Called after every gradient step when
+        gauge_mode=="zero_mean_ref".  Adjusts the bias of the final linear
+        layer (index -2) by subtracting the mean forward-pass output on
+        ref_segments.  For tanh-activated networks this is an approximation
+        (exact only in the linear case), but converges with repeated application.
+        """
+        if self.ref_segments is None:
+            return
+        with torch.no_grad():
+            for member in range(self.de):
+                # shape: (N_ref, T, 1) → sum over T → (N_ref, 1) → scalar
+                mean_r = self.r_hat_member(
+                    self.ref_segments, member=member
+                ).sum(dim=1).mean()
+                self.ensemble[member][-2].bias.data -= mean_r
+
+    def get_gauge_diagnostics(self, D_current_segments: np.ndarray) -> dict:
+        """Compute gauge-diagnostic scalars after RM training.
+
+        [Gauge experiment, Step 2] Returns a dict of metric_name → float.
+        Caller is responsible for logging these at the correct training step.
+
+        Args:
+            D_current_segments: fresh on-policy segments, shape (64, T, ds+da).
+
+        Returns:
+            dict with keys rm/mean_on_ref, rm/std_on_ref, rm/mean_on_policy,
+            rm/std_on_policy, rm/gauge_gap, rm/param_norm.
+        """
+        metrics: dict = {}
+        with torch.no_grad():
+            # ── Reference-set stats ─────────────────────────────────────────
+            if self.ref_segments is not None:
+                ref_per_member = []
+                for m in range(self.de):
+                    r = self.r_hat_member(self.ref_segments, member=m)  # (N, T, 1)
+                    ref_per_member.append(r.sum(dim=1).detach().cpu().numpy().flatten())
+                ref_returns = np.stack(ref_per_member).mean(axis=0)  # (N_ref,)
+                metrics['rm/mean_on_ref'] = float(ref_returns.mean())
+                metrics['rm/std_on_ref']  = float(ref_returns.std())
+
+            # ── Current-policy stats ────────────────────────────────────────
+            pol_per_member = []
+            for m in range(self.de):
+                r = self.r_hat_member(D_current_segments, member=m)  # (64, T, 1)
+                pol_per_member.append(r.sum(dim=1).detach().cpu().numpy().flatten())
+            pol_returns = np.stack(pol_per_member).mean(axis=0)  # (64,)
+            metrics['rm/mean_on_policy'] = float(pol_returns.mean())
+            metrics['rm/std_on_policy']  = float(pol_returns.std())
+
+            # ── Gauge gap (key diagnostic) ──────────────────────────────────
+            if 'rm/mean_on_ref' in metrics:
+                metrics['rm/gauge_gap'] = (
+                    metrics['rm/mean_on_policy'] - metrics['rm/mean_on_ref']
+                )
+
+            # ── RM parameter norm (verify weight decay in Mode A) ───────────
+            norm_sq = sum(
+                p.norm().item() ** 2
+                for m in range(self.de)
+                for p in self.ensemble[m].parameters()
+            )
+            metrics['rm/param_norm'] = float(norm_sq ** 0.5)
+
+        return metrics
+
+    # ── End gauge helpers ────────────────────────────────────────────────────
+
     def add_data(self, obs, act, rew, done):
         sa_t = np.concatenate([obs, act], axis=-1)
         r_t = rew
@@ -1038,17 +1131,20 @@ class RewardModel:
                 curr_loss = self.CEloss(r_hat, labels)
                 loss += curr_loss
                 ensemble_losses[member].append(curr_loss.item())
-                
+
                 # compute acc
                 _, predicted = torch.max(r_hat.data, 1)
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
-                
+
             if self.log_extra_metrics and self.use_wandb:
                 old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
                 old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
+            # [Gauge experiment, Step 1] Post-step zero-mean projection for Mode B.
+            if self.gauge_mode == "zero_mean_ref":
+                self._apply_zero_mean_projection()
             if self.log_extra_metrics and self.use_wandb:
                 for member in range(self.de):
                     for layer_name, old_w, idx in [
@@ -1118,17 +1214,20 @@ class RewardModel:
                 curr_loss = self.softXEnt_loss(r_hat, target_onehot)
                 loss += curr_loss
                 ensemble_losses[member].append(curr_loss.item())
-                
+
                 # compute acc
                 _, predicted = torch.max(r_hat.data, 1)
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
-                
+
             if self.log_extra_metrics and self.use_wandb:
                 old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
                 old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
+            # [Gauge experiment, Step 1] Post-step zero-mean projection for Mode B.
+            if self.gauge_mode == "zero_mean_ref":
+                self._apply_zero_mean_projection()
             if self.log_extra_metrics and self.use_wandb:
                 for member in range(self.de):
                     for layer_name, old_w, idx in [
