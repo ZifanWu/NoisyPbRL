@@ -33,18 +33,41 @@ export WANDB_PROJECT=pbrl_gauge_ambiguity
 
 ---
 
-## Track 1 — Standard regime (~11 RM updates across 1 M steps)
+## RM update count by environment
 
-Default config: `max_feedback=1400`, `num_interact=5000`, `reward_update=200`.
+The number of RM retraining events is `ceil(max_feedback / reward_batch)`.  This
+varies significantly across environment families:
+
+| Environment family | `max_feedback` | `reward_batch` | `reward_update` | RM updates |
+|-------------------|---------------|----------------|-----------------|------------|
+| DMControl (`walker_walk`, `cheetah_run`) | 1 400 | 128 | 200 | **~11** |
+| MetaWorld (`button_press`, `window_close`, …) | 20 000 | 100 | 10 | **~200** |
+
+For the gauge hypothesis (divergence accumulates over iterations) the MetaWorld
+setting already provides the dense iterative regime.  **MetaWorld environments are
+the better primary choice** for this experiment; the DMControl stress test
+(`num_interact=1000`) is only needed if MetaWorld is unavailable or results there
+are inconclusive.
+
+---
+
+## Track 1 — MetaWorld, standard regime (~200 RM updates)
+
+Recommended primary track.  Uses the existing `button_press` script parameters.
 
 ### Single run (sanity check)
 ```bash
 python train_PEBBLE.py \
-    env=walker_walk \
+    env=metaworld_button-press-v2 \
     seed=1 \
     gauge_mode=l2 \
     tandem_mode=baseline \
     use_wandb=true \
+    num_unsup_steps=9000 \
+    num_interact=5000 \
+    max_feedback=20000 \
+    reward_batch=100 \
+    reward_update=10 \
     num_train_steps=1000000 \
     exp_dir=/path/to/exp
 ```
@@ -52,28 +75,33 @@ python train_PEBBLE.py \
 ### Full 30-run matrix (use SLURM or a parallel launcher)
 
 ```bash
-for ENV in walker_walk cheetah_run; do
+for ENV in metaworld_button-press-v2 metaworld_window-close-v2; do
 for GAUGE in l2 none zero_mean_ref; do
 for SEED in 1 2 3 4 5; do
   sbatch tandem_slurm_submit.sh \
     env=$ENV \
     gauge_mode=$GAUGE \
     seed=$SEED \
+    num_unsup_steps=9000 \
+    num_interact=5000 \
+    max_feedback=20000 \
+    reward_batch=100 \
+    reward_update=10 \
     tandem_mode=baseline \
     use_wandb=true
 done; done; done
 ```
 
-Estimated compute: each run ≈ **2–3 GPU-hours** on a single A100/V100 for 1 M steps
-with `walker_walk`/`cheetah_run`.  Total: 30 × 2.5 h ≈ **75 GPU-hours**.
+Estimated compute: each run ≈ **2–3 GPU-hours** on a single A100/V100.
+Total: 30 × 2.5 h ≈ **75 GPU-hours**.
 
 ---
 
-## Track 2 — Stress test (~50 RM updates, optional)
+## Track 2 — DMControl, stress test (~50 RM updates, optional)
 
-Increase RM retraining frequency by setting `num_interact=1000`.  This keeps the
-feedback budget the same (`max_feedback=1400`) but the RM is retrained ≈ 50 times,
-giving the gauge effect more iterations to accumulate.
+Only needed if MetaWorld is unavailable or as a cross-domain replication.
+Set `num_interact=1000` to increase RM retraining frequency from ~11 to ~50
+with the DMControl default `max_feedback=1400`.
 
 ```bash
 for ENV in walker_walk cheetah_run; do
@@ -89,7 +117,7 @@ for SEED in 1 2 3; do
 done; done; done
 ```
 
-Estimated compute: same per-run cost, 18 runs × 2.5 h ≈ **45 GPU-hours**.
+Estimated compute: 18 runs × 2.5 h ≈ **45 GPU-hours**.
 
 ---
 
@@ -180,13 +208,16 @@ This is the intended π_ref (unsup-pretrained initial policy).
 
 ### RM update count
 
-In the standard regime, the RM is retrained as long as
-`total_feedback < max_feedback`.  With `max_feedback=1400`, `mb_size=128` (after
-schedule), `large_batch=10`, and `num_interact=5000`, the RM is updated
-approximately **11 times** across 1 M steps.  This is fewer than the 100–200
-quoted in the original PEBBLE paper because that paper uses a larger feedback
-budget.  The stress test (`num_interact=1000`) brings this to approximately **50**
-updates.
+The RM is retrained as long as `total_feedback < max_feedback`, once per
+`num_interact` env steps.  The number of updates is `ceil(max_feedback /
+reward_batch)` — this depends on environment configuration, not just
+`num_interact`:
+
+- **MetaWorld** (`max_feedback=20000`, `reward_batch=100`): **~200 updates** —
+  the full iterative regime. Recommended primary track.
+- **DMControl** (`max_feedback=1400`, `reward_batch=128`): **~11 updates** —
+  too sparse for the gauge effect to accumulate meaningfully without adjusting
+  `num_interact`. Use `num_interact=1000` (stress test) to bring this to ~50.
 
 ### Dependencies on existing code
 
