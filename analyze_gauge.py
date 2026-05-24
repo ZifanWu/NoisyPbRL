@@ -61,10 +61,10 @@ _METRICS = [
     "eval/true_episode_reward",
     "eval/proxy_return",
     "eval/return_gap",
-    "rm/gauge_gap",
-    "rm/param_norm",
-    "rm/mean_on_ref",
-    "rm/mean_on_policy",
+    "train/rm_gauge_gap",
+    "train/rm_param_norm",
+    "train/rm_mean_on_ref",
+    "train/rm_mean_on_policy",
     "_step",
 ]
 
@@ -316,7 +316,7 @@ def plot_true_return(df: pd.DataFrame, envs: List[str], output_dir: str) -> str:
 
 def plot_gauge_gap(df: pd.DataFrame, envs: List[str], output_dir: str) -> str:
     path = os.path.join(output_dir, "plot2_gauge_gap.png")
-    _plot_metric(df, "rm/gauge_gap", envs, path,
+    _plot_metric(df, "train/rm_gauge_gap", envs, path,
                  ylabel="rm/gauge_gap  (E[r|π_curr] – E[r|π_ref])",
                  title="Plot 2 — Gauge gap over training (key diagnostic)\n"
                        "Mode B stays near zero by construction; Mode A can drift",
@@ -326,7 +326,7 @@ def plot_gauge_gap(df: pd.DataFrame, envs: List[str], output_dir: str) -> str:
 
 def plot_param_norm(df: pd.DataFrame, envs: List[str], output_dir: str) -> str:
     path = os.path.join(output_dir, "plot3_param_norm.png")
-    _plot_metric(df, "rm/param_norm", envs, path,
+    _plot_metric(df, "train/rm_param_norm", envs, path,
                  ylabel="RM parameter ℓ2-norm (all members)",
                  title="Plot 3 — RM parameter norm\n"
                        "Mode A (L2) should stay bounded; Mode B may grow")

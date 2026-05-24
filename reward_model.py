@@ -499,8 +499,8 @@ class RewardModel:
                     r = self.r_hat_member(self.ref_segments, member=m)  # (N, T, 1)
                     ref_per_member.append(r.sum(dim=1).detach().cpu().numpy().flatten())
                 ref_returns = np.stack(ref_per_member).mean(axis=0)  # (N_ref,)
-                metrics['rm/mean_on_ref'] = float(ref_returns.mean())
-                metrics['rm/std_on_ref']  = float(ref_returns.std())
+                metrics['train/rm_mean_on_ref'] = float(ref_returns.mean())
+                metrics['train/rm_std_on_ref']  = float(ref_returns.std())
 
             # ── Current-policy stats ────────────────────────────────────────
             pol_per_member = []
@@ -508,13 +508,13 @@ class RewardModel:
                 r = self.r_hat_member(D_current_segments, member=m)  # (64, T, 1)
                 pol_per_member.append(r.sum(dim=1).detach().cpu().numpy().flatten())
             pol_returns = np.stack(pol_per_member).mean(axis=0)  # (64,)
-            metrics['rm/mean_on_policy'] = float(pol_returns.mean())
-            metrics['rm/std_on_policy']  = float(pol_returns.std())
+            metrics['train/rm_mean_on_policy'] = float(pol_returns.mean())
+            metrics['train/rm_std_on_policy']  = float(pol_returns.std())
 
             # ── Gauge gap (key diagnostic) ──────────────────────────────────
-            if 'rm/mean_on_ref' in metrics:
-                metrics['rm/gauge_gap'] = (
-                    metrics['rm/mean_on_policy'] - metrics['rm/mean_on_ref']
+            if 'train/rm_mean_on_ref' in metrics:
+                metrics['train/rm_gauge_gap'] = (
+                    metrics['train/rm_mean_on_policy'] - metrics['train/rm_mean_on_ref']
                 )
 
             # ── RM parameter norm (verify weight decay in Mode A) ───────────
@@ -523,7 +523,7 @@ class RewardModel:
                 for m in range(self.de)
                 for p in self.ensemble[m].parameters()
             )
-            metrics['rm/param_norm'] = float(norm_sq ** 0.5)
+            metrics['train/rm_param_norm'] = float(norm_sq ** 0.5)
 
         return metrics
 
