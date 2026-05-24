@@ -94,6 +94,7 @@ class RewardModel:
                  dormant_threshold=0.1,
                  use_wandb=False,
                  bt_log_period=5000,
+                 log_extra_metrics=False,
                  feed_type=0):
         
         # train data is trajectories, must process to sa and s..   
@@ -154,6 +155,7 @@ class RewardModel:
         self.dormant_log_period = dormant_log_period
         self.dormant_threshold = dormant_threshold
         self.use_wandb = use_wandb
+        self.log_extra_metrics = log_extra_metrics
         self.reward_grad_steps = 0
         self.env_step = 0
         self.prev_dormant_sets = [None] * self.de
@@ -180,7 +182,7 @@ class RewardModel:
         return torch.from_numpy(flat[idxs]).float().to(device)
 
     def log_dormant_neurons(self):
-        if not self.use_wandb:
+        if not self.log_extra_metrics or not self.use_wandb:
             return
         import wandb
         if wandb.run is None:
@@ -325,7 +327,7 @@ class RewardModel:
         )
 
     def log_batch_bt_and_grad_norm(self):
-        if not self.use_wandb:
+        if not self.log_extra_metrics or not self.use_wandb:
             return
         import wandb
         if wandb.run is None:
@@ -370,7 +372,7 @@ class RewardModel:
         self.opt.zero_grad()
 
     def log_buffer_bt_metrics(self, step):
-        if not self.use_wandb:
+        if not self.log_extra_metrics or not self.use_wandb:
             return
         import wandb
         if wandb.run is None:
@@ -385,7 +387,7 @@ class RewardModel:
                              title_desc='full preference buffer')
 
     def flush_weight_update_ratios(self, step):
-        if self.use_wandb:
+        if self.log_extra_metrics and self.use_wandb:
             import wandb
             if wandb.run is not None:
                 log_data = {}
@@ -1042,12 +1044,12 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
-            if self.use_wandb:
+            if self.log_extra_metrics and self.use_wandb:
                 old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
                 old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
-            if self.use_wandb:
+            if self.log_extra_metrics and self.use_wandb:
                 for member in range(self.de):
                     for layer_name, old_w, idx in [
                         ('penultimate', old_penultimate[member], -4),
@@ -1122,12 +1124,12 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
-            if self.use_wandb:
+            if self.log_extra_metrics and self.use_wandb:
                 old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
                 old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
-            if self.use_wandb:
+            if self.log_extra_metrics and self.use_wandb:
                 for member in range(self.de):
                     for layer_name, old_w, idx in [
                         ('penultimate', old_penultimate[member], -4),

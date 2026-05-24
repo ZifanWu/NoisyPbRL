@@ -50,6 +50,7 @@ device: cuda:${gpu}
 dormant_log_period: 5000
 dormant_threshold: 0.1
 bt_log_period: 5000
+log_extra_metrics: false
 
 # logger
 log_frequency: 10000

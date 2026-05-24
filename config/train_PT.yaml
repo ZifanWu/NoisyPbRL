@@ -40,6 +40,8 @@ num_eval_episodes: 10
 gpu: 0
 device: cuda:${gpu}
 
+log_extra_metrics: false
+
 # logger
 log_frequency: 10000
 log_save_tb: true

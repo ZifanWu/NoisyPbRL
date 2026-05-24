@@ -35,7 +35,7 @@ class TandemLogger:
 
     def __init__(self, log_path: str, obs_dim: int, act_dim: int, max_steps: int):
         os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
-        self.f = h5py.File(log_path, "w", libver="latest")
+        self.f = h5py.File(log_path, "w", libver="latest", locking=False)
         self.obs_dim = obs_dim
         self.act_dim = act_dim
 

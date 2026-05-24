@@ -44,6 +44,7 @@ dormant_threshold: 0.1
 
 # BT weight / gradient norm logging
 bt_log_period: 5000
+log_extra_metrics: false
 
 # logger
 log_frequency: 10000

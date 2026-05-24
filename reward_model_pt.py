@@ -142,7 +142,8 @@ class TransformerRewardModel:
                  feed_type=0,
                  use_wandb=False,
                  # ignored compat params
-                 dormant_log_period=5000, dormant_threshold=0.1, bt_log_period=5000):
+                 dormant_log_period=5000, dormant_threshold=0.1, bt_log_period=5000,
+                 log_extra_metrics=False):
 
         self.ds = ds
         self.da = da

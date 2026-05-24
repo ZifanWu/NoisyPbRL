@@ -23,7 +23,7 @@ _DEVICE = "cuda"
 
 class TandemReader:
     def __init__(self, log_path: str):
-        self.f = h5py.File(log_path, "r")
+        self.f = h5py.File(log_path, "r", locking=False)
         self.num_steps = int(self.f["replay_buffer"].attrs["length"])
         self.num_query_events = int(self.f["query_events"].attrs["count"])
 

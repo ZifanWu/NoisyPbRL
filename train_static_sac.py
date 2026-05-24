@@ -104,6 +104,7 @@ class Workspace:
             dormant_threshold=cfg.dormant_threshold,
             use_wandb=cfg.use_wandb,
             bt_log_period=cfg.rm_log_interval,
+            log_extra_metrics=cfg.log_extra_metrics,
             feed_type=0,  # always uniform for offline RM training
             capacity=cfg.max_feedback * cfg.large_batch,
         )

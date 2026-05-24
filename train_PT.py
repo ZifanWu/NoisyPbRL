@@ -92,6 +92,7 @@ class Workspace(object):
             teacher_eps_equal=cfg.teacher_eps_equal,
             feed_type=cfg.feed_type,
             use_wandb=cfg.use_wandb,
+            log_extra_metrics=cfg.log_extra_metrics,
             capacity=cfg.max_feedback * cfg.large_batch,
             # transformer hyperparams
             embd_dim=cfg.embd_dim,

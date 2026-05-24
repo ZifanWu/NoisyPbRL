@@ -118,6 +118,7 @@ class Workspace(object):
             dormant_threshold=cfg.dormant_threshold,
             use_wandb=cfg.use_wandb,
             bt_log_period=cfg.bt_log_period,
+            log_extra_metrics=cfg.log_extra_metrics,
             feed_type=cfg.feed_type,
             capacity=cfg.max_feedback * cfg.large_batch)
 
