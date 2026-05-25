@@ -10,9 +10,11 @@ Three gauge modes are compared:
 
 | Mode | Optimizer | Post-step projection | Description |
 |------|-----------|----------------------|-------------|
+| `none` | Adam, `weight_decay=0` | None | **Baseline** — original BPref, no gauge fixing (used for C6) |
 | `l2` | Adam, `weight_decay=1e-4` | None | Standard RLHF ℓ₂ regularisation |
-| `none` | Adam, `weight_decay=0` | None | No regularisation (original BPref) |
 | `zero_mean_ref` | Adam, `weight_decay=0` | Subtract mean on frozen D_ref | Explicit zero-mean constraint |
+
+Default config: `gauge_mode=none` (backward-compatible with BPref's original behavior).
 
 Experiment matrix: 2 envs × 3 gauge modes × 5 seeds = **30 runs** (Track 1 standard).
 
@@ -133,6 +135,8 @@ Every RM training event (`~learn_reward` call, ≈ every `num_interact` steps):
 | `rm/std_on_policy` | Std of on-policy return |
 | `rm/gauge_gap` | `mean_on_policy − mean_on_ref` (key diagnostic) |
 | `rm/param_norm` | ℓ₂ norm of all RM parameters (all ensemble members) |
+| `rm/bt_loss_final` | Mean BT loss on the final training epoch (C3 comparability check) |
+| `train/rm_update_count` | Cumulative number of `learn_reward` calls this run (C7) |
 
 Every `eval_frequency=10 000` env steps:
 
@@ -149,14 +153,15 @@ Every `eval_frequency=10 000` env steps:
 
 Run these before producing final plots:
 
-| Check | What to verify | Failure action |
-|-------|---------------|----------------|
-| C1 | Mode `l2`: `rm/param_norm` stays bounded over training | Weight decay not applied — check optimizer config |
-| C2 | Mode `zero_mean_ref`: `rm/gauge_gap < 0.1 × ‖r‖_typical` | Projection broken — check `_apply_zero_mean_projection` |
-| C3 | All modes: `train/reward_model_acc` converges to similar values | One mode is worse at fitting BT — investigate LR/WD interaction |
-| C4 | All modes: same number of RM training events | Feedback budget or `num_interact` mismatch |
-| C5 | Same env steps, same seeds per mode | Verify Hydra output dirs are separate (gauge_mode in path) |
-| C6 | Mode `l2` reproduces published PEBBLE performance (within seed noise) | Baseline setup is wrong — compare against paper numbers |
+| Check | What to verify | Pass criterion | Failure action |
+|-------|---------------|----------------|----------------|
+| C1 | `rm/param_norm` constrained by weight decay | At end of training: `param_norm(l2) < 0.7 × param_norm(none)`, both finite | Weight decay too weak — bump to `5e-4` and re-run; or optimizer config bug |
+| C2 | Mode `zero_mean_ref`: zero-mean projection works | After each `learn_reward`: `|rm/mean_on_ref| < 0.01 × rm/std_on_ref` per ensemble member | Projection broken — check `_apply_zero_mean_projection` (arithmetic or per-member application) |
+| C3 | BT loss comparability across modes | `median(rm/bt_loss_final[zero_mean_ref]) / median(rm/bt_loss_final[none]) < 1.5` (same for `l2`) | One mode's constraint interferes with BT optimization — check LR/projection frequency |
+| C4 | All modes: same number of RM training events | `total_feedback` count identical across all (mode, env, seed) for matched seeds | Feedback scheduling bug — one mode gets different data |
+| C5 | Same env steps, same seeds per mode | Identical `num_train_steps`, `num_seed_steps`, and RNG seeds | Configuration confound — verify Hydra output dirs are separate (gauge_mode in path) |
+| C6 | Mode `none` reproduces published PEBBLE baseline | Final `eval/true_episode_reward` for `gauge_mode=none` within ±15% of paper's PEBBLE numbers | New modes broke the existing pipeline — do **not** trust any results until this passes |
+| C7 | RM update event count is identical across modes | All (mode, env, seed) runs log the same final `train/rm_update_count` | Reward budget exhaustion timing differs — investigate before reporting results |
 
 ---
 
@@ -167,7 +172,7 @@ After all runs finish:
 ```bash
 python analyze_gauge.py \
     --project pbrl_gauge_ambiguity \
-    --envs walker_walk cheetah_run \
+    --envs button_press sweep_into \
     --seeds 1 2 3 4 5 \
     --output results/ \
     --track both

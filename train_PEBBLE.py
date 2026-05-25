@@ -407,16 +407,27 @@ class Workspace(object):
         print(f"Reward function updated (event {idx})  ACC: {total_acc:.4f}")
         self.logger.log('train/reward_model_acc', total_acc, self.step)
 
+        # [Gauge experiment, Step 1] Update zero-mean offsets after full RM training.
+        # Must happen before get_gauge_diagnostics so C2 is measured on corrected outputs.
+        self.reward_model._update_zero_mean_offsets()
+
         # [Gauge experiment, Step 2] Log gauge diagnostics after RM training.
+        # Includes rm/bt_loss_final (C3), rm/param_norm (C1), rm/gauge_gap (C2),
+        # and rm/mean/std on ref and on-policy sets.
         if _D_current is not None:
             gauge_metrics = self.reward_model.get_gauge_diagnostics(_D_current)
             for key, value in gauge_metrics.items():
                 self.logger.log(key, value, self.step)
+        else:
+            # Always log bt_loss_final even when diagnostic env is unavailable.
+            self.logger.log('train/rm_bt_loss_final', self.reward_model.last_bt_loss, self.step)
 
         if mode == 'baseline':
             self.tandem_logger.flush()
 
         self._rm_update_idx += 1
+        # [Gauge experiment, C7] Log cumulative RM update count for sanity check.
+        self.logger.log('train/rm_update_count', self._rm_update_idx, self.step)
 
     # ────────────────────────────────────────────────────────────────────────
     # Main training loop

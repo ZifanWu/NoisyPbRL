@@ -96,9 +96,9 @@ class RewardModel:
                  bt_log_period=5000,
                  log_extra_metrics=False,
                  feed_type=0,
-                 gauge_mode: str = "l2"):
-        
-        # train data is trajectories, must process to sa and s..   
+                 gauge_mode: str = "none"):
+
+        # train data is trajectories, must process to sa and s..
         self.ds = ds
         self.da = da
         self.de = ensemble_size
@@ -112,9 +112,17 @@ class RewardModel:
         self.size_segment = size_segment
         # [Gauge experiment, Step 1] gauge_mode controls optimizer regularization and
         # post-step projection. Must be set before construct_ensemble() creates the optimizer.
-        # "l2": weight_decay=1e-4  "none": weight_decay=0  "zero_mean_ref": wd=0 + projection
+        # "none": weight_decay=0 (BPref default, baseline)  "l2": weight_decay=1e-4
+        # "zero_mean_ref": wd=0 + zero-mean projection on frozen reference segments.
+        # Default "none" matches BPref's original behavior (no gauge fixing).
         self.gauge_mode = gauge_mode
         self.ref_segments = None  # frozen np.ndarray (N_ref, T, ds+da), set once
+        self.last_bt_loss: float = float('nan')  # final-epoch BT loss; set by train_reward/train_soft_reward
+        # [Gauge experiment, Step 1] Per-member per-step output offsets for zero_mean_ref mode.
+        # Set by _update_zero_mean_offsets() after each learn_reward call. Applied in r_hat_member
+        # so that E_D_ref[sum_t r_hat(s_t,a_t)] = 0 for each ensemble member. Using an output-space
+        # offset (not a bias shift before tanh) makes the constraint exact for nonlinear networks.
+        self._zero_mean_offsets: list[float] = [0.0] * (ensemble_size or 1)
 
         self.capacity = int(capacity)
         self.buffer_seg1 = np.empty((self.capacity, size_segment, self.ds+self.da), dtype=np.float32)
@@ -435,13 +443,14 @@ class RewardModel:
             self.ensemble.append(model)
             self.paramlst.extend(model.parameters())
 
-        # [Gauge experiment, Step 1] Mode A uses ℓ2 weight decay; modes B and none do not.
+        # [Gauge experiment, Step 1] "l2" mode uses ℓ2 weight decay; "none" and "zero_mean_ref" do not.
         _wd = 1e-4 if self.gauge_mode == "l2" else 0.0
         self.opt = torch.optim.Adam(self.paramlst, lr=self.lr, weight_decay=_wd)
 
     def reset_ensemble(self):
         self.ensemble = []
         self.paramlst = []
+        self._zero_mean_offsets = [0.0] * self.de
         self.construct_ensemble()
 
     # ── Gauge-ambiguity experiment helpers ──────────────────────────────────
@@ -458,24 +467,30 @@ class RewardModel:
         """
         self.ref_segments = segments.copy()
 
-    def _apply_zero_mean_projection(self) -> None:
-        """Project each ensemble member so its mean reward on D_ref is zero.
+    def _update_zero_mean_offsets(self) -> None:
+        """Compute per-member output offsets so mean return on D_ref is exactly zero.
 
-        [Gauge experiment, Step 1] Called after every gradient step when
-        gauge_mode=="zero_mean_ref".  Adjusts the bias of the final linear
-        layer (index -2) by subtracting the mean forward-pass output on
-        ref_segments.  For tanh-activated networks this is an approximation
-        (exact only in the linear case), but converges with repeated application.
+        [Gauge experiment, Step 1] Called once after each full learn_reward session
+        (not after each gradient step) for gauge_mode=="zero_mean_ref".
+
+        The previous approach subtracted the post-tanh mean from the pre-tanh bias,
+        which is only valid for linear networks: tanh(x - c) != tanh(x) - c, so the
+        mean did not go to zero.  This implementation instead stores a per-member
+        per-step scalar that is subtracted in r_hat_member at inference time, making
+        the constraint exact for any activation function.
+
+        The per-step offset is mean_trajectory_return / size_segment so that summing
+        over T steps cancels the trajectory-level mean exactly.
         """
         if self.ref_segments is None:
             return
         with torch.no_grad():
-            for member in range(self.de):
-                # shape: (N_ref, T, 1) → sum over T → (N_ref, 1) → scalar
-                mean_r = self.r_hat_member(
-                    self.ref_segments, member=member
-                ).sum(dim=1).mean()
-                self.ensemble[member][-2].bias.data -= mean_r
+            ref_t = torch.from_numpy(self.ref_segments).float().to(device)
+            for m in range(self.de):
+                # Bypass the offset by calling the raw network directly.
+                raw_out = self.ensemble[m](ref_t)                       # (N_ref, T, 1)
+                mean_return = raw_out.sum(dim=1).mean().item()          # mean trajectory return
+                self._zero_mean_offsets[m] = mean_return / self.size_segment  # per-step
 
     def get_gauge_diagnostics(self, D_current_segments: np.ndarray) -> dict:
         """Compute gauge-diagnostic scalars after RM training.
@@ -517,13 +532,16 @@ class RewardModel:
                     metrics['train/rm_mean_on_policy'] - metrics['train/rm_mean_on_ref']
                 )
 
-            # ── RM parameter norm (verify weight decay in Mode A) ───────────
+            # ── RM parameter norm (verify weight decay in "l2" mode) ────────
             norm_sq = sum(
                 p.norm().item() ** 2
                 for m in range(self.de)
                 for p in self.ensemble[m].parameters()
             )
             metrics['train/rm_param_norm'] = float(norm_sq ** 0.5)
+
+        # [Gauge experiment, Step 2] Final BT loss from last train_reward/train_soft_reward call (C3).
+        metrics['train/rm_bt_loss_final'] = self.last_bt_loss
 
         return metrics
 
@@ -616,7 +634,12 @@ class RewardModel:
 
     def r_hat_member(self, x, member=-1):
         # the network parameterizes r hat in eqn 1 from the paper
-        return self.ensemble[member](torch.from_numpy(x).float().to(device))
+        out = self.ensemble[member](torch.from_numpy(x).float().to(device))
+        # [Gauge experiment, Step 1] Subtract per-step offset so E_D_ref[sum_t r_hat] = 0.
+        # Cancels in BT loss differences, so training is unaffected.
+        if self.gauge_mode == "zero_mean_ref":
+            out = out - self._zero_mean_offsets[member]
+        return out
 
     def r_hat(self, x):
         # they say they average the rewards from each member of the ensemble, but I think this only makes sense if the rewards are already normalized
@@ -1142,9 +1165,6 @@ class RewardModel:
                 old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
-            # [Gauge experiment, Step 1] Post-step zero-mean projection for Mode B.
-            if self.gauge_mode == "zero_mean_ref":
-                self._apply_zero_mean_projection()
             if self.log_extra_metrics and self.use_wandb:
                 for member in range(self.de):
                     for layer_name, old_w, idx in [
@@ -1162,6 +1182,10 @@ class RewardModel:
 
         ensemble_acc = ensemble_acc / total
 
+        # [Gauge experiment, Step 2] Record the mean BT loss from the final epoch across
+        # all ensemble members (C3: BT loss comparability across gauge modes).
+        if ensemble_losses and ensemble_losses[0]:
+            self.last_bt_loss = float(np.mean([losses[-1] for losses in ensemble_losses]))
         return ensemble_acc
 
     def train_soft_reward(self):
@@ -1225,9 +1249,6 @@ class RewardModel:
                 old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
             loss.backward()
             self.opt.step()
-            # [Gauge experiment, Step 1] Post-step zero-mean projection for Mode B.
-            if self.gauge_mode == "zero_mean_ref":
-                self._apply_zero_mean_projection()
             if self.log_extra_metrics and self.use_wandb:
                 for member in range(self.de):
                     for layer_name, old_w, idx in [
@@ -1245,4 +1266,7 @@ class RewardModel:
 
         ensemble_acc = ensemble_acc / total
 
+        # [Gauge experiment, Step 2] Record final-epoch BT loss for C3 check.
+        if ensemble_losses and ensemble_losses[0]:
+            self.last_bt_loss = float(np.mean([losses[-1] for losses in ensemble_losses]))
         return ensemble_acc

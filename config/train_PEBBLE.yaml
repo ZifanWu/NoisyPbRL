@@ -30,11 +30,11 @@ rm_reset: false
 
 # Gauge-ambiguity experiment
 # [Gauge experiment, Step 1] Controls RM optimizer regularization and post-step
-# projection.  "l2": Adam weight_decay=1e-4 (standard RLHF)  "none": wd=0 (current
-# BPref default, no regularization)  "zero_mean_ref": wd=0 + zero-mean projection
+# projection.  "none": wd=0 (BPref default, no gauge fixing — baseline for C6)
+# "l2": Adam weight_decay=1e-4  "zero_mean_ref": wd=0 + zero-mean projection
 # on frozen reference segments collected at first RM training event.
-# Default "l2" — run with gauge_mode=none or gauge_mode=zero_mean_ref to compare.
-gauge_mode: l2
+# Default "none" preserves backward compatibility with BPref's original behavior.
+gauge_mode: none
 
 # scheduling
 reward_schedule: 0
