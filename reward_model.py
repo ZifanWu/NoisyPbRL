@@ -123,6 +123,7 @@ class RewardModel:
         # so that E_D_ref[sum_t r_hat(s_t,a_t)] = 0 for each ensemble member. Using an output-space
         # offset (not a bias shift before tanh) makes the constraint exact for nonlinear networks.
         self._zero_mean_offsets: list[float] = [0.0] * (ensemble_size or 1)
+        self._frozen: bool = False
 
         self.capacity = int(capacity)
         self.buffer_seg1 = np.empty((self.capacity, size_segment, self.ds+self.da), dtype=np.float32)
@@ -544,6 +545,14 @@ class RewardModel:
         metrics['train/rm_bt_loss_final'] = self.last_bt_loss
 
         return metrics
+
+    def get_rm_parameters(self) -> list:
+        """Return a flat list of all RM parameters across ensemble members."""
+        return list(self.paramlst)
+
+    def set_frozen(self, frozen: bool) -> None:
+        """Defensive flag: when True, short-circuits any retraining attempts."""
+        self._frozen = frozen
 
     # ── End gauge helpers ────────────────────────────────────────────────────
 

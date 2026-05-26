@@ -192,6 +192,11 @@ class Workspace(object):
                 self._gauge_eval_env = utils.make_env(cfg)
             self._gauge_obs = self._gauge_eval_env.reset()
 
+        # ── Shared loop state (set by _unsup_pretrain_loop, read by _policy_training_loop) ──
+        self._avg_train_true_return = deque([], maxlen=10)
+        self._loop_obs  = None   # observation at loop hand-off point
+        self._loop_done = True   # done flag at loop hand-off point
+
     # ────────────────────────────────────────────────────────────────────────
     # Gauge experiment helpers
     # ────────────────────────────────────────────────────────────────────────
@@ -430,35 +435,39 @@ class Workspace(object):
         self.logger.log('train/rm_update_count', self._rm_update_idx, self.step)
 
     # ────────────────────────────────────────────────────────────────────────
-    # Main training loop
+    # Training loop helpers
     # ────────────────────────────────────────────────────────────────────────
 
-    def run(self):
-        mode = self.cfg.tandem_mode
-        cfg  = self.cfg
+    def _unsup_pretrain_loop(self):
+        """Run seed phase + unsupervised exploration up to (but not including) warmup_end.
 
-        episode         = 0
-        episode_reward  = 0
+        On return: self.step == warmup_end, self._loop_obs and self._loop_done hold
+        the observation and done flag that _policy_training_loop should start from.
+        self._avg_train_true_return is populated with recent true episode returns.
+        """
+        cfg  = self.cfg
+        mode = cfg.tandem_mode
+        warmup_end = cfg.num_seed_steps + cfg.num_unsup_steps
+
+        episode             = 0
+        episode_reward      = 0
         true_episode_reward = 0
-        done            = True
+        done                = True
         if self.log_success:
             episode_success = 0
-
-        avg_train_true_return = deque([], maxlen=10)
         start_time = time.time()
 
-        # ── condition (ii): state for the *tandem* env (RM data collection) ─
         tandem_obs  = None
         tandem_done = True
         if self._tandem_env is not None:
             tandem_obs  = self._tandem_env.reset()
             tandem_done = False
 
-        interact_count = 0
+        obs = None  # set by first episode-boundary reset below
 
-        while self.step < cfg.num_train_steps:
+        while self.step < warmup_end:
 
-            # ── Episode boundary bookkeeping ─────────────────────────────
+            # ── Episode boundary ─────────────────────────────────────────
             if done:
                 if self.step > 0:
                     self.logger.log('train/duration', time.time() - start_time, self.step)
@@ -475,47 +484,38 @@ class Workspace(object):
                     self.logger.log('train/episode_success',      episode_success, self.step)
                     self.logger.log('train/true_episode_success', episode_success, self.step)
 
-                if mode in _PASSIVE_POLICY:
-                    # obs will be set from baseline log below; no env.reset() needed
-                    pass
-                else:
+                if mode not in _PASSIVE_POLICY:
                     obs = self.env.reset()
 
                 done            = False
                 episode_reward  = 0
-                avg_train_true_return.append(true_episode_reward)
+                self._avg_train_true_return.append(true_episode_reward)
                 true_episode_reward = 0
                 if self.log_success:
                     episode_success = 0
-                episode_step = 0
                 episode += 1
                 self.logger.log('train/episode', episode, self.step)
 
-            # ── Obtain (obs, action, reward, next_obs, done) ─────────────
+            # ── Transition ───────────────────────────────────────────────
             if mode in _PASSIVE_POLICY:
-                # Load baseline transition; the policy never touches self.env
                 (obs, action, env_reward,
                  next_obs, _done_f, done_no_max) = self.tandem_reader.get_transition(self.step)
                 done        = bool(_done_f)
                 done_no_max = float(done_no_max)
             else:
-                # Active policy: act in self.env
                 if self.step < cfg.num_seed_steps:
                     action = self.env.action_space.sample()
                 else:
                     with utils.eval_mode(self.agent):
                         action = self.agent.act(obs, sample=True)
-
                 next_obs, env_reward, terminated, truncated, extra = self.env.step(action)
                 done        = terminated or truncated
                 done_no_max = 0.0 if (truncated and not terminated) else float(done)
                 env_reward  = float(env_reward)
 
-            # ── RM segment pool update ────────────────────────────────────
-            # Only called when the RM collects its own data (not passive RM cases).
+            # ── RM segment pool ───────────────────────────────────────────
             if mode in _ACTIVE_RM_DATA:
                 if mode == 'passive_pol_active_rm':
-                    # condition (ii): RM data comes from the *tandem* env, not baseline
                     if not tandem_done:
                         with utils.eval_mode(self.agent):
                             t_action = self.agent.act(tandem_obs, sample=True)
@@ -527,17 +527,15 @@ class Workspace(object):
                     tandem_obs  = self._tandem_env.reset() if t_done else t_next_obs
                     tandem_done = False
                 else:
-                    # baseline / iv-a: use current (obs, action, env_reward, done)
                     self.reward_model.add_data(obs, action, env_reward, float(done))
 
-            # ── Reward hat and replay buffer ──────────────────────────────
+            # ── Reward hat + replay buffer ────────────────────────────────
             reward_hat = self.reward_model.r_hat(
                 np.concatenate([obs, action], axis=-1))
             episode_reward      += reward_hat
             true_episode_reward += env_reward
             if self.log_success and mode not in _PASSIVE_POLICY:
                 episode_success = max(episode_success, extra['success'])
-
             self.replay_buffer.add(obs, action, reward_hat,
                                    next_obs, float(done), done_no_max)
 
@@ -553,17 +551,156 @@ class Workspace(object):
                     self._ep_id         += 1
                     self._ep_start_step  = self.step + 1
 
-            # ── Training updates ──────────────────────────────────────────
-            warmup_end = cfg.num_seed_steps + cfg.num_unsup_steps
+            # ── Unsupervised update (state-entropy bonus) ─────────────────
+            if self.step > cfg.num_seed_steps:
+                self.agent.update_state_ent(
+                    self.replay_buffer, self.logger, self.step,
+                    gradient_update=1, K=cfg.topK)
 
+            # ── Sanity checks ─────────────────────────────────────────────
+            if cfg.sanity_mode and mode != 'baseline':
+                sanity_checks.run_checks(
+                    mode, self.tandem_reader, self.reward_model,
+                    self.replay_buffer, self.step, self._rm_update_idx,
+                    check_interval=cfg.sanity_check_interval)
+
+            # ── Advance ───────────────────────────────────────────────────
+            if mode not in _PASSIVE_POLICY:
+                obs = next_obs
+            self.step += 1
+
+        # Hand off loop state to the next phase
+        self._loop_obs  = obs
+        self._loop_done = done
+
+    def _policy_training_loop(self, diag_callback=None, diag_freq=None):
+        """Run RL phase from self.step to cfg.num_train_steps.
+
+        For the iterative case, call with self.step == warmup_end; this method
+        handles the warmup_end RM event internally.  For the one-shot case,
+        call with self.step == warmup_end + 1 (the one-shot run() already
+        processed the warmup_end step and fired its single RM event).
+
+        diag_callback(step) is called every diag_freq steps when provided.
+        """
+        cfg  = self.cfg
+        mode = cfg.tandem_mode
+        warmup_end = cfg.num_seed_steps + cfg.num_unsup_steps
+
+        obs  = self._loop_obs
+        done = self._loop_done
+
+        episode             = 0
+        episode_reward      = 0
+        true_episode_reward = 0
+        if self.log_success:
+            episode_success = 0
+        start_time  = time.time()
+        interact_count = 0
+
+        tandem_obs  = None
+        tandem_done = True
+        if self._tandem_env is not None:
+            # Re-initialise tandem env state for this phase
+            tandem_obs  = self._tandem_env.reset()
+            tandem_done = False
+
+        while self.step < cfg.num_train_steps:
+
+            # ── Episode boundary ─────────────────────────────────────────
+            if done:
+                if self.step > 0:
+                    self.logger.log('train/duration', time.time() - start_time, self.step)
+                    start_time = time.time()
+                    self.logger.dump(self.step, save=True)
+
+                if self.step > 0 and self.step % cfg.eval_frequency == 0:
+                    self.logger.log('eval/episode', episode, self.step)
+                    self.evaluate()
+
+                self.logger.log('train/episode_reward',      episode_reward,      self.step)
+                self.logger.log('train/true_episode_reward', true_episode_reward, self.step)
+                if self.log_success:
+                    self.logger.log('train/episode_success',      episode_success, self.step)
+                    self.logger.log('train/true_episode_success', episode_success, self.step)
+
+                if mode not in _PASSIVE_POLICY:
+                    obs = self.env.reset()
+
+                done            = False
+                episode_reward  = 0
+                self._avg_train_true_return.append(true_episode_reward)
+                true_episode_reward = 0
+                if self.log_success:
+                    episode_success = 0
+                episode += 1
+                self.logger.log('train/episode', episode, self.step)
+
+            # ── Transition ───────────────────────────────────────────────
+            if mode in _PASSIVE_POLICY:
+                (obs, action, env_reward,
+                 next_obs, _done_f, done_no_max) = self.tandem_reader.get_transition(self.step)
+                done        = bool(_done_f)
+                done_no_max = float(done_no_max)
+            else:
+                with utils.eval_mode(self.agent):
+                    action = self.agent.act(obs, sample=True)
+                next_obs, env_reward, terminated, truncated, extra = self.env.step(action)
+                done        = terminated or truncated
+                done_no_max = 0.0 if (truncated and not terminated) else float(done)
+                env_reward  = float(env_reward)
+
+            # ── RM segment pool ───────────────────────────────────────────
+            if mode in _ACTIVE_RM_DATA:
+                if mode == 'passive_pol_active_rm':
+                    if not tandem_done:
+                        with utils.eval_mode(self.agent):
+                            t_action = self.agent.act(tandem_obs, sample=True)
+                    else:
+                        t_action = self._tandem_env.action_space.sample()
+                    t_next_obs, t_reward, t_term, t_trunc, _ = self._tandem_env.step(t_action)
+                    t_done = t_term or t_trunc
+                    self.reward_model.add_data(tandem_obs, t_action, t_reward, float(t_done))
+                    tandem_obs  = self._tandem_env.reset() if t_done else t_next_obs
+                    tandem_done = False
+                else:
+                    self.reward_model.add_data(obs, action, env_reward, float(done))
+
+            # ── Reward hat + replay buffer ────────────────────────────────
+            reward_hat = self.reward_model.r_hat(
+                np.concatenate([obs, action], axis=-1))
+            episode_reward      += reward_hat
+            true_episode_reward += env_reward
+            if self.log_success and mode not in _PASSIVE_POLICY:
+                episode_success = max(episode_success, extra['success'])
+            self.replay_buffer.add(obs, action, reward_hat,
+                                   next_obs, float(done), done_no_max)
+
+            # ── Baseline logging ──────────────────────────────────────────
+            if mode == 'baseline':
+                self.tandem_logger.log_transition(
+                    self.step, obs, action, env_reward,
+                    next_obs, float(done), done_no_max)
+                if done:
+                    ep_len = self.step - self._ep_start_step + 1
+                    self.tandem_logger.log_episode_end(
+                        self._ep_id, self._ep_start_step, ep_len)
+                    self._ep_id         += 1
+                    self._ep_start_step  = self.step + 1
+
+            # ── Optional gauge-diagnostic callback ────────────────────────
+            if (diag_callback is not None and diag_freq is not None
+                    and self.step > 0 and self.step % diag_freq == 0):
+                diag_callback(self.step)
+
+            # ── Training updates ──────────────────────────────────────────
             if self.step == warmup_end:
-                # ── Compute schedule frac ────────────────────────────────
                 frac = self._compute_frac()
                 self.reward_model.change_batch(frac)
                 if mode == 'baseline':
                     self.tandem_logger.log_schedule(self.step, frac, self.reward_model.mb_size)
 
-                new_margin = (np.mean(avg_train_true_return)
+                new_margin = (np.mean(self._avg_train_true_return)
                               * (cfg.segment / self.env._max_episode_steps))
                 self.reward_model.set_teacher_thres_skip(new_margin)
                 self.reward_model.set_teacher_thres_equal(new_margin)
@@ -572,7 +709,6 @@ class Workspace(object):
                 self.learn_reward(first_flag=1)
                 self.reward_model.pre_relabel_logging(self.step)
                 self.replay_buffer.relabel_with_predictor(self.reward_model)
-
                 self.agent.reset_critic()
                 self.agent.update_after_reset(
                     self.replay_buffer, self.logger, self.step,
@@ -589,7 +725,7 @@ class Workspace(object):
                             self.tandem_logger.log_schedule(
                                 self.step, frac, self.reward_model.mb_size)
 
-                        new_margin = (np.mean(avg_train_true_return)
+                        new_margin = (np.mean(self._avg_train_true_return)
                                       * (cfg.segment / self.env._max_episode_steps))
                         self.reward_model.set_teacher_thres_skip(
                             new_margin * cfg.teacher_eps_skip)
@@ -609,14 +745,6 @@ class Workspace(object):
 
                 self.agent.update(self.replay_buffer, self.logger, self.step, 1)
 
-            elif self.step > cfg.num_seed_steps:
-                # Unsupervised exploration phase — state entropy bonus
-                # Works identically for passive-policy: replay_buffer already holds
-                # baseline transitions so the K-NN is over the baseline state distribution.
-                self.agent.update_state_ent(
-                    self.replay_buffer, self.logger, self.step,
-                    gradient_update=1, K=cfg.topK)
-
             # ── Sanity checks ─────────────────────────────────────────────
             if cfg.sanity_mode and mode != 'baseline':
                 sanity_checks.run_checks(
@@ -627,8 +755,8 @@ class Workspace(object):
             # ── Advance ───────────────────────────────────────────────────
             if mode not in _PASSIVE_POLICY:
                 obs = next_obs
-            self.step          += 1
-            interact_count     += 1
+            self.step      += 1
+            interact_count += 1
 
         # ── End of training ───────────────────────────────────────────────
         self.agent.save(self.work_dir, self.step)
@@ -637,6 +765,15 @@ class Workspace(object):
             self.tandem_logger.close()
         if self.tandem_reader is not None:
             self.tandem_reader.close()
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Main training entry point
+    # ────────────────────────────────────────────────────────────────────────
+
+    def run(self):
+        """Iterative PEBBLE training: unsup pretrain → periodic RM updates → SAC."""
+        self._unsup_pretrain_loop()       # steps 0 .. warmup_end-1
+        self._policy_training_loop()      # steps warmup_end .. num_train_steps-1
 
     # ────────────────────────────────────────────────────────────────────────
     # Helpers

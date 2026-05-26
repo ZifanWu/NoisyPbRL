@@ -1,8 +1,8 @@
 defaults:
     - agent: sac
-    
+
 # this needs to be specified manually
-experiment: PEBBLE
+experiment: PEBBLE_oneshot
 
 # reward learning
 segment: 50
@@ -37,7 +37,7 @@ rm_reset: false
 gauge_mode: none
 
 # How often (in env steps) to log gauge diagnostics during the policy-training
-# phase.  Used by train_PEBBLE_oneshot.py; ignored by the iterative script.
+# phase.  Only used by train_PEBBLE_oneshot.py.
 gauge_diag_frequency: ${eval_frequency}
 
 # scheduling
@@ -71,17 +71,10 @@ save_video: false
 # setups
 seed: 1
 
-# Tandem experiment
-# tandem_mode: baseline | all_passive | passive_pol_active_rm |
-#              active_pol_passive_rm | active_pol_passive_query | active_pol_passive_dist
+# Tandem experiment — oneshot always uses baseline mode
 tandem_mode: baseline
-# Directory where baseline HDF5 logs are stored.
-# Override with tandem_log_dir=/your/path on any machine.
 tandem_log_dir: ${exp_dir}/tandem_logs
-# Explicit path override (optional).  If null, auto-derived as
-# {tandem_log_dir}/tandem_baseline_{env}_seed{seed}.h5
 tandem_log_path: null
-# Set to true to enable SC2/SC3 routing invariant checks every sanity_check_interval steps.
 sanity_mode: false
 sanity_check_interval: 2000
 
