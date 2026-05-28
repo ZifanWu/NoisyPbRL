@@ -1,0 +1,38 @@
+envs:
+  - walker_walk
+  - metaworld_drawer-open-v2
+  - metaworld_hammer-v2
+
+alpha_modes:
+  - auto
+  - low
+  - high
+
+seeds:
+  - 12345
+  - 23451
+  - 34512
+  - 45123
+  - 51234
+  - 67890
+
+rrm_active_gauges:
+  - none
+  - no_tanh
+
+pg_active_gauges:
+  - none
+  - mean_buf
+  - mean_ref
+  - no_tanh
+  - no_tanh_mean_buf
+  - no_tanh_mean_ref
+
+defaults:
+  n_shift_sample: 2048
+  n_ref: 10000
+  pg_pref_batch_size: 256
+  pg_cg_iters: 10
+  pg_n_traj: 4
+  pg_k_perf: 5
+

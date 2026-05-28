@@ -30,7 +30,7 @@ class Workspace(object):
             import socket
             import wandb
             wandb.init(
-                project='NoisyPbRL',
+                project='performative-correction',
                 name=f'{cfg.env}__{cfg.agent.name}__seed{cfg.seed}',
                 config=dict(cfg),
                 notes=socket.gethostname(),

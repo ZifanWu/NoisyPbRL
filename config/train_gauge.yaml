@@ -1,0 +1,96 @@
+defaults:
+    - agent: sac
+
+experiment: gauge
+
+# reward learning
+segment: 50
+activation: tanh
+num_seed_steps: 1000
+num_unsup_steps: 5000
+num_interact: 5000
+reward_lr: 0.0003
+reward_batch: 128
+reward_update: 200
+feed_type: 0
+reset_update: 100
+topK: 5
+ensemble_size: 3
+max_feedback: 1400
+large_batch: 10
+label_margin: 0.0
+teacher_beta: -1
+teacher_gamma: 1
+teacher_eps_mistake: 0
+teacher_eps_skip: 0
+teacher_eps_equal: 0
+
+rm_reset: false
+reward_schedule: 0
+
+num_train_steps: 1e6
+replay_buffer_capacity: ${num_train_steps}
+
+# evaluation config
+eval_frequency: 10000
+num_eval_episodes: 10
+gpu: 0
+device: cuda:${gpu}
+
+# dormant neuron tracking
+dormant_log_period: 5000
+dormant_threshold: 0.1
+
+# BT weight / gradient norm logging
+bt_log_period: 5000
+
+# logger
+log_frequency: 10000
+log_save_tb: true
+use_wandb: false
+
+save_video: false
+seed: 1
+env: walker_walk
+gradient_update: 1
+
+gauge:
+    method: rrm            # rrm or perfg
+    active: none           # one of none, mean_buf, mean_ref, no_tanh, no_tanh_mean_buf, no_tanh_mean_ref
+    alpha_mode: auto       # auto, low, high
+    n_shift_sample: 2048
+    pred_batch_size: 512
+    reference_root: reference_dataset
+    n_ref: 10000
+    reference_seed: 0
+    auto_create_reference: true
+    log_reward_diagnostics: false
+    shift_seed_offset: 1729
+    pg:
+        perf_grad: true       # standard Section 4.7 performative correction
+        gauge_corr: true      # additive gauge-shift term, active only when perf_grad=true
+        solver: cg            # cg or ridge; ridge uses w = u / ridge and skips HVP/CG
+        merge_cg: false        # solve base+shift as one CG system; false restores two-solve path
+        fd_weights: true      # finite-difference <w, grad_phi loss_i>; false uses exact per-sample backward
+        fd_eps: 0.001
+        u_source: recent      # recent or rollout; recent avoids extra env rollouts for u
+        recent_sa_capacity: 50000
+        recent_u_horizon: 50
+        recent_min_samples: 50
+        recent_fallback_rollout: false
+        rm_param_scope: all   # all, final_layer, or final_bias
+        k_perf: 5
+        apply_during_reset: false
+        max_actor_grad_norm: 1.0
+        pref_batch_size: 256
+        cg_iters: 10
+        ridge: 0.001
+        n_traj: 4
+        rollout_horizon: 0
+        rng_offset: 8081
+        env_seed_offset: 40000
+
+hydra:
+    name: ${env}
+    run:
+        dir: /uufs/chpc.utah.edu/common/home/dbrown-group1/zifan/pg_gauge/${env}/gauge/${gauge.method}/alpha_${gauge.alpha_mode}/active_${gauge.active}/H${diag_gaussian_actor.params.hidden_dim}_L${diag_gaussian_actor.params.hidden_depth}_lr${agent.params.actor_lr}/teacher_b${teacher_beta}_g${teacher_gamma}_m${teacher_eps_mistake}_s${teacher_eps_skip}_e${teacher_eps_equal}/label_smooth_${label_margin}/schedule_${reward_schedule}/${experiment}_init${num_seed_steps}_unsup${num_unsup_steps}_inter${num_interact}_maxfeed${max_feedback}_seg${segment}_act${activation}_Rlr${reward_lr}_Rbatch${reward_batch}_Rupdate${reward_update}_en${ensemble_size}_sample${feed_type}_large_batch${large_batch}_rm${rm_reset}_seed${seed}
