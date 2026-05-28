@@ -20,7 +20,7 @@
 # PARTITION selects one of three cluster/account modes:
 #   dbrown-gpu-grn -> qos=dbrown-gpu-grn, partition=dbrown-gpu-grn, account=dbrown
 #   dbrown-gpu-np  -> no qos, partition=dbrown-gpu-np, account=dbrown-gpu-np
-#   soc-gpu-np     -> no qos, partition=soc-gpu-np, account=soc-gpu-np
+#   soc-gpu-np     -> no qos, partition=soc-gpu-np, account=soc-gpu-np, exclude nodes
 # ==============================================================
 
 set -euo pipefail
@@ -35,23 +35,25 @@ case "$PARTITION" in
         SLURM_QOS_LINE="#SBATCH --qos=dbrown-gpu-grn"
         SLURM_PARTITION="dbrown-gpu-grn"
         SLURM_ACCOUNT="dbrown"
+        SLURM_EXCLUDE_LINE="##SBATCH --exclude=${EXCLUDE_NODES:-notch372,notch369,notch475,notch371}"
         ;;
     dbrown-gpu-np)
         SLURM_QOS_LINE="##SBATCH --qos=dbrown-gpu-grn"
         SLURM_PARTITION="dbrown-gpu-np"
         SLURM_ACCOUNT="dbrown-gpu-np"
+        SLURM_EXCLUDE_LINE="##SBATCH --exclude=${EXCLUDE_NODES:-notch372,notch369,notch475,notch371}"
         ;;
     soc-gpu-np)
         SLURM_QOS_LINE="##SBATCH --qos=dbrown-gpu-grn"
         SLURM_PARTITION="soc-gpu-np"
         SLURM_ACCOUNT="soc-gpu-np"
+        SLURM_EXCLUDE_LINE="#SBATCH --exclude=${EXCLUDE_NODES:-notch372,notch369,notch475,notch371}"
         ;;
     *)
         echo "ERROR: PARTITION must be one of: dbrown-gpu-grn | dbrown-gpu-np | soc-gpu-np"
         exit 1
         ;;
 esac
-EXCLUDE_NODES="${EXCLUDE_NODES:-notch372,notch369,notch475,notch371}"
 USE_WANDB="${USE_WANDB:-false}"
 SKIP_DONE="${SKIP_DONE:-true}"
 DONE_STEP="${DONE_STEP:-990000}"
@@ -103,6 +105,7 @@ echo "  partition mode : $PARTITION"
 echo "  slurm partition: $SLURM_PARTITION"
 echo "  slurm account  : $SLURM_ACCOUNT"
 echo "  slurm qos line : $SLURM_QOS_LINE"
+echo "  slurm exclude  : $SLURM_EXCLUDE_LINE"
 echo "  script dir     : $SCRIPT_DIR"
 echo "  python         : $PYTHON"
 echo "  results dir    : $RESULTS_DIR"
@@ -179,6 +182,7 @@ TMP_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${JOB_NAME}_XXXXXX.sh")"
 cat > "$TMP_SCRIPT" <<'EOT'
 #!/bin/bash
 #SBATCH --gres=gpu:1
+#SBATCH --mem=20g
 #SBATCH --cpus-per-task=__CPUS_PER_TASK__
 #SBATCH --ntasks=1
 #SBATCH --job-name=__JOB_NAME__
@@ -186,7 +190,7 @@ cat > "$TMP_SCRIPT" <<'EOT'
 __SLURM_QOS_LINE__
 #SBATCH --partition=__SLURM_PARTITION__
 #SBATCH --account=__SLURM_ACCOUNT__
-#SBATCH --exclude=__EXCLUDE_NODES__
+__SLURM_EXCLUDE_LINE__
 #SBATCH --output=__LOG_DIR__/__JOB_NAME___%A_%a.out
 
 set -euo pipefail
@@ -328,7 +332,7 @@ python_replace "__TIME_LIMIT__" "$TIME_LIMIT"
 python_replace "__SLURM_QOS_LINE__" "$SLURM_QOS_LINE"
 python_replace "__SLURM_PARTITION__" "$SLURM_PARTITION"
 python_replace "__SLURM_ACCOUNT__" "$SLURM_ACCOUNT"
-python_replace "__EXCLUDE_NODES__" "$EXCLUDE_NODES"
+python_replace "__SLURM_EXCLUDE_LINE__" "$SLURM_EXCLUDE_LINE"
 python_replace "__LOG_DIR__" "$LOG_DIR"
 python_replace "__SCRIPT_DIR__" "$SCRIPT_DIR"
 python_replace "__PYTHON__" "$PYTHON"
