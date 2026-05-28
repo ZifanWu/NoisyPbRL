@@ -15,6 +15,12 @@
 #   DRY_RUN=true bash gauge_phase1_submit.sh
 #   SKIP_DONE=false bash gauge_phase1_submit.sh
 #   TIME_LIMIT=36:00:00 bash gauge_phase3_submit.sh
+#   PARTITION=dbrown-gpu-grn bash gauge_phase1_submit.sh
+#
+# PARTITION selects one of three cluster/account modes:
+#   dbrown-gpu-grn -> qos=dbrown-gpu-grn, partition=dbrown-gpu-grn, account=dbrown
+#   dbrown-gpu-np  -> no qos, partition=dbrown-gpu-np, account=dbrown-gpu-np
+#   soc-gpu-np     -> no qos, partition=soc-gpu-np, account=soc-gpu-np
 # ==============================================================
 
 set -euo pipefail
@@ -24,7 +30,27 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-2}"
 TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 PARTITION="${PARTITION:-dbrown-gpu-np}"
-ACCOUNT="${ACCOUNT:-dbrown-gpu-np}"
+case "$PARTITION" in
+    dbrown-gpu-grn)
+        SLURM_QOS_LINE="#SBATCH --qos=dbrown-gpu-grn"
+        SLURM_PARTITION="dbrown-gpu-grn"
+        SLURM_ACCOUNT="dbrown"
+        ;;
+    dbrown-gpu-np)
+        SLURM_QOS_LINE="##SBATCH --qos=dbrown-gpu-grn"
+        SLURM_PARTITION="dbrown-gpu-np"
+        SLURM_ACCOUNT="dbrown-gpu-np"
+        ;;
+    soc-gpu-np)
+        SLURM_QOS_LINE="##SBATCH --qos=dbrown-gpu-grn"
+        SLURM_PARTITION="soc-gpu-np"
+        SLURM_ACCOUNT="soc-gpu-np"
+        ;;
+    *)
+        echo "ERROR: PARTITION must be one of: dbrown-gpu-grn | dbrown-gpu-np | soc-gpu-np"
+        exit 1
+        ;;
+esac
 EXCLUDE_NODES="${EXCLUDE_NODES:-notch372,notch369,notch475,notch371}"
 USE_WANDB="${USE_WANDB:-false}"
 SKIP_DONE="${SKIP_DONE:-true}"
@@ -73,6 +99,10 @@ echo "=== Gauge PbRL SLURM submission ==="
 echo "  phase          : $PHASE"
 echo "  max concurrent : $MAX_CONCURRENT"
 echo "  time limit     : $TIME_LIMIT"
+echo "  partition mode : $PARTITION"
+echo "  slurm partition: $SLURM_PARTITION"
+echo "  slurm account  : $SLURM_ACCOUNT"
+echo "  slurm qos line : $SLURM_QOS_LINE"
 echo "  script dir     : $SCRIPT_DIR"
 echo "  python         : $PYTHON"
 echo "  results dir    : $RESULTS_DIR"
@@ -153,9 +183,9 @@ cat > "$TMP_SCRIPT" <<'EOT'
 #SBATCH --ntasks=1
 #SBATCH --job-name=__JOB_NAME__
 #SBATCH --time=__TIME_LIMIT__
-##SBATCH --qos=dbrown-gpu-grn
-#SBATCH --partition=__PARTITION__
-#SBATCH --account=__ACCOUNT__
+__SLURM_QOS_LINE__
+#SBATCH --partition=__SLURM_PARTITION__
+#SBATCH --account=__SLURM_ACCOUNT__
 #SBATCH --exclude=__EXCLUDE_NODES__
 #SBATCH --output=__LOG_DIR__/__JOB_NAME___%A_%a.out
 
@@ -295,8 +325,9 @@ PY
 python_replace "__CPUS_PER_TASK__" "$CPUS_PER_TASK"
 python_replace "__JOB_NAME__" "$JOB_NAME"
 python_replace "__TIME_LIMIT__" "$TIME_LIMIT"
-python_replace "__PARTITION__" "$PARTITION"
-python_replace "__ACCOUNT__" "$ACCOUNT"
+python_replace "__SLURM_QOS_LINE__" "$SLURM_QOS_LINE"
+python_replace "__SLURM_PARTITION__" "$SLURM_PARTITION"
+python_replace "__SLURM_ACCOUNT__" "$SLURM_ACCOUNT"
 python_replace "__EXCLUDE_NODES__" "$EXCLUDE_NODES"
 python_replace "__LOG_DIR__" "$LOG_DIR"
 python_replace "__SCRIPT_DIR__" "$SCRIPT_DIR"
