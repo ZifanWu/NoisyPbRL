@@ -2,6 +2,6 @@ phase: phase2
 description: >
   Alpha cross-cut with 3 seeds across all alpha modes.
 alpha_modes: [low, auto, high]
-seeds: [1, 2, 3]
-envs: [walker_walk, drawer_open, hammer]
+seeds: [12345, 23451, 34512]
+envs: [drawer_open, walker_walk]
 methods: [rrm, pg_rlhf]

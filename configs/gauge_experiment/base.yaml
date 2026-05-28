@@ -20,10 +20,10 @@ default_overrides:
   n_ref: 10000
   reference_seed: 0
   n_shift_sample: 2048
-  pref_subsample: 32
+  pref_subsample: 64
   replay_subsample: 256
   perf_n_traj: 1
-  cg_iter: 5
+  cg_iter: 7
   eps_ridge: 0.001
   perf_max_grad_norm: 10.0
   k_perf: 20

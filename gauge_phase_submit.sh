@@ -30,7 +30,7 @@ set -euo pipefail
 
 PHASE="${1:-${PHASE:-phase1}}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-all}"
-TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
+TIME_LIMIT="${TIME_LIMIT:-12:00:00}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 PARTITION="${PARTITION:-dbrown-gpu-np}"
 case "$PARTITION" in
@@ -57,7 +57,7 @@ case "$PARTITION" in
         exit 1
         ;;
 esac
-USE_WANDB="${USE_WANDB:-false}"
+USE_WANDB="${USE_WANDB:-true}"
 SKIP_DONE="${SKIP_DONE:-true}"
 DONE_STEP="${DONE_STEP:-990000}"
 DRY_RUN="${DRY_RUN:-false}"

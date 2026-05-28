@@ -3,6 +3,6 @@ description: >
   Exploration phase. Two environments can be selected by CLI filter if desired,
   default here keeps all configured envs with auto alpha and 3 seeds.
 alpha_modes: [auto]
-seeds: [1, 2, 3]
-envs: [walker_walk, drawer_open, hammer]
+seeds: [12345, 23451, 34512]
+envs: [drawer_open, walker_walk]
 methods: [rrm, pg_rlhf]
