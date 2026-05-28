@@ -27,6 +27,13 @@ from replay_buffer import ReplayBuffer
 from reward_model import RewardModel
 from tandem_logger import TandemLogger
 from tandem_reader import TandemReader
+from pebble_gauge.reward_model_gauge import GaugedRewardModel, VALID_GAUGES
+from pebble_gauge.reference_dataset import build_or_load_reference_dataset
+from pebble_gauge.perf_correction import (
+    PerfCorrectionConfig,
+    compute_total_perf_correction,
+    grad_l2_norm,
+)
 
 
 # Conditions where the policy never steps the training env
@@ -49,7 +56,7 @@ class Workspace(object):
         if cfg.use_wandb:
             import socket, wandb
             wandb.init(
-                project='pbrl_gauge_ambiguity',
+                project=getattr(cfg, "wandb_project", "performative-correction"),
                 name=f'{cfg.env}__{cfg.agent.name}__seed{cfg.seed}__{mode}',
                 config=dict(cfg),
                 notes=socket.gethostname(),
@@ -122,6 +129,47 @@ class Workspace(object):
             feed_type=cfg.feed_type,
             capacity=cfg.max_feedback * cfg.large_batch,
             gauge_mode=cfg.gauge_mode)
+        self._base_reward_model = self.reward_model
+
+        self.enable_gauge_experiment = bool(getattr(cfg, "enable_gauge_experiment", False))
+        self.method = str(getattr(cfg, "method", "rrm"))
+        self.gauge = str(getattr(cfg, "gauge", "none"))
+        self.alpha_mode = str(getattr(cfg, "alpha_mode", "auto"))
+        self.n_shift_sample = int(getattr(cfg, "n_shift_sample", 2048))
+        self.n_ref = int(getattr(cfg, "n_ref", 10_000))
+        self.reference_seed = int(getattr(cfg, "reference_seed", 0))
+        self.reference_dataset_dir = str(getattr(cfg, "reference_dataset_dir", "reference_dataset"))
+        self.k_perf = int(getattr(cfg, "k_perf", 5))
+        self.n_perf_traj = int(getattr(cfg, "perf_n_traj", 4))
+        self.horizon = float(getattr(cfg, "h_horizon", float(self.env._max_episode_steps)))
+        self._actor_update_count = 0
+        self._reference_sa = None
+        self._perf_cfg = PerfCorrectionConfig(
+            pref_subsample=int(getattr(cfg, "pref_subsample", 256)),
+            replay_subsample=int(getattr(cfg, "replay_subsample", 256)),
+            shift_subsample=int(getattr(cfg, "n_shift_sample", 2048)),
+            cg_iter=int(getattr(cfg, "cg_iter", 10)),
+            eps_ridge=float(getattr(cfg, "eps_ridge", 1e-3)),
+            horizon=self.horizon,
+            max_grad_norm=float(getattr(cfg, "perf_max_grad_norm", 100.0)),
+        )
+        self._actor_lr = float(getattr(cfg.agent.params, "actor_lr", 1e-4))
+
+        if self.enable_gauge_experiment:
+            self._reference_sa = build_or_load_reference_dataset(
+                cfg=cfg,
+                env_name=cfg.env,
+                n_ref=self.n_ref,
+                out_dir=self.reference_dataset_dir,
+                seed=self.reference_seed,
+            )
+            active_gauge = "none" if self.method == "rrm" else self.gauge
+            self.reward_model = GaugedRewardModel(
+                base_reward_model=self._base_reward_model,
+                gauge=active_gauge,
+                n_shift_sample=self.n_shift_sample,
+                reference_sa=self._reference_sa,
+            )
 
         # For condition iv-a: a scratch RewardModel that receives baseline RM
         # weights loaded from the log, used only to score candidate pairs.
@@ -201,6 +249,23 @@ class Workspace(object):
     # Gauge experiment helpers
     # ────────────────────────────────────────────────────────────────────────
 
+    @property
+    def _rm_for_sac(self):
+        """Reward model used for SAC relabeling and step rewards.
+
+        For PG-RLHF we use the unshifted base RM so that the gauge effect on
+        policy gradient enters *only* through the performative correction
+        G_perf_shift, not through the SAC Q-function.  For RRM the active gauge
+        is always 'none' (shift = 0) so both choices are identical.
+        """
+        if (
+            self.enable_gauge_experiment
+            and self.method == "pg_rlhf"
+            and isinstance(self.reward_model, GaugedRewardModel)
+        ):
+            return self.reward_model.base_reward_model
+        return self.reward_model
+
     def _collect_on_policy_segments(self, n_segs: int) -> np.ndarray:
         """Collect n_segs contiguous segments from the gauge eval env.
 
@@ -233,6 +298,188 @@ class Workspace(object):
         self._gauge_obs = obs
         return flat_buf.reshape(n_segs, seg_len, obs_dim + act_dim)
 
+    def _collect_on_policy_trajectories_for_perf(self, n_traj: int):
+        """Collect stochastic current-policy trajectories for the performative u vector."""
+        if self._gauge_eval_env is None:
+            return []
+        max_steps = int(self.horizon or getattr(self.env, "_max_episode_steps", 1000))
+        trajectories = []
+        with utils.eval_mode(self.agent):
+            for _ in range(max(0, int(n_traj))):
+                obs = self._gauge_eval_env.reset()
+                done = False
+                steps = []
+                t = 0
+                while not done and t < max_steps:
+                    action = self.agent.act(obs, sample=True)
+                    steps.append(np.concatenate([obs, action]).astype(np.float32))
+                    next_obs, _, terminated, truncated, _ = self._gauge_eval_env.step(action)
+                    done = terminated or truncated
+                    obs = next_obs
+                    t += 1
+                if steps:
+                    trajectories.append(np.stack(steps).astype(np.float32))
+        self._gauge_obs = self._gauge_eval_env.reset()
+        return trajectories
+
+    def _recompute_and_log_gauge_shifts(self) -> None:
+        if not self.enable_gauge_experiment:
+            return
+        if not isinstance(self.reward_model, GaugedRewardModel):
+            return
+        self.reward_model.recompute_shifts(
+            replay_buffer=self.replay_buffer,
+            reference_sa=self._reference_sa,
+        )
+        for key, value in self.reward_model.shift_log_metrics().items():
+            self.logger.log(key, value, self.step)
+
+        # Sanity check 2: gauge algebra. For every sampled (s, a),
+        # r_none - r_mean_* must equal the stored additive shift.
+        check_sa = self.reward_model._sample_replay_sa(
+            self.replay_buffer,
+            min(self.n_shift_sample, 2048),
+        )
+        if check_sa is not None and len(check_sa) > 0:
+            check = self.reward_model.gauge_consistency_check(
+                check_sa,
+                atol=float(getattr(self.cfg, "gauge_check_atol", 1e-4)),
+                include_no_tanh=False,
+            )
+            if not check.passed:
+                raise AssertionError(
+                    "Gauge algebra check failed: "
+                    f"mean_buf_err={check.max_abs_err_mean_buf:.6g}, "
+                    f"mean_ref_err={check.max_abs_err_mean_ref:.6g}"
+                )
+
+    def _on_actor_update(self, obs, step, print_flag):
+        if not self.enable_gauge_experiment:
+            return
+        if self.method != "pg_rlhf":
+            return
+        if not bool(getattr(self.cfg, "use_perf_correction", False)):
+            return
+        self._actor_update_count += 1
+        if self._actor_update_count % max(1, self.k_perf) != 0:
+            return
+
+        rm_for_correction = (
+            self.reward_model.base_reward_model
+            if isinstance(self.reward_model, GaugedRewardModel)
+            else self.reward_model
+        )
+
+        on_policy_trajs = self._collect_on_policy_trajectories_for_perf(self.n_perf_traj)
+
+        g_total, perf_metrics = compute_total_perf_correction(
+            reward_model=rm_for_correction,
+            actor=self.agent.actor,
+            replay_buffer=self.replay_buffer,
+            gauge=self.gauge,
+            reference_sa=self._reference_sa,
+            cfg=self._perf_cfg,
+            on_policy_trajs=on_policy_trajs,
+        )
+        total_norm_raw = grad_l2_norm(g_total)
+        if not np.isfinite(total_norm_raw):
+            return
+        if total_norm_raw > self._perf_cfg.max_grad_norm and total_norm_raw > 0:
+            scale = self._perf_cfg.max_grad_norm / (total_norm_raw + 1e-12)
+            for p in g_total:
+                g_total[p] = g_total[p] * scale
+
+        with torch.no_grad():
+            for p in self.agent.actor.parameters():
+                p.add_(self._actor_lr * g_total[p])
+            for p in self.agent.actor.parameters():
+                if not torch.isfinite(p).all():
+                    raise RuntimeError(
+                        "Non-finite actor parameters after performative correction; "
+                        "try lowering perf_max_grad_norm or disabling use_perf_correction."
+                    )
+
+        if print_flag:
+            self.logger.log("train/perf_correction_base_norm",
+                            perf_metrics.get("actor/perf_correction_base_norm", 0.0), step)
+            self.logger.log("train/perf_correction_shift_norm",
+                            perf_metrics.get("actor/perf_correction_shift_norm", 0.0), step)
+            self.logger.log("train/perf_correction_total_norm", total_norm_raw, step)
+
+    def _evaluate_under_gauge(self, gauge_name: str, n_episodes: int = 20):
+        proxy_returns = []
+        true_returns = []
+        for ep in range(n_episodes):
+            try:
+                obs = self.env.reset(seed=int(self.cfg.seed) + ep)
+            except TypeError:
+                obs = self.env.reset()
+            done = False
+            traj = []
+            true_return = 0.0
+            while not done:
+                with utils.eval_mode(self.agent):
+                    action = self.agent.act(obs, sample=False)
+                traj.append(np.concatenate([obs, action]).astype(np.float32))
+                obs, reward, terminated, truncated, _ = self.env.step(action)
+                done = terminated or truncated
+                true_return += float(reward)
+            sa_batch = np.stack(traj) if traj else np.zeros((0, self.env.observation_space.shape[0] + self.env.action_space.shape[0]), dtype=np.float32)
+            if isinstance(self.reward_model, GaugedRewardModel):
+                proxy_return = self.reward_model.proxy_return(sa_batch, gauge=gauge_name)
+            else:
+                proxy_return = float(self.reward_model.r_hat_batch(sa_batch).sum()) if len(sa_batch) > 0 else 0.0
+            proxy_returns.append(proxy_return)
+            true_returns.append(true_return)
+        return {
+            "proxy_return": float(np.mean(proxy_returns)),
+            "true_return": float(np.mean(true_returns)),
+        }
+
+    def _rrm_bit_identity_check(self):
+        """Verify gauge plumbing for RRM.
+
+        Rolls out the final policy once per episode with a deterministic actor,
+        then computes all gauge proxy returns from the *same* (obs, action)
+        trajectory.  This avoids env.reset(seed=…) which is not supported by
+        DMControl, while still exercising every gauge on identical data.
+
+        Hard check: for each timestep, r_none(s,a) - r_gauge(s,a) must equal
+        shift_gauge within floating-point tolerance.  This is exact by
+        construction if the gauge plumbing is correct.
+        """
+        if not (self.enable_gauge_experiment and isinstance(self.reward_model, GaugedRewardModel)):
+            return
+        if self.method != "rrm":
+            return
+
+        # Collect one episode trajectory (deterministic policy, fixed env state).
+        obs = self.env.reset()
+        self.agent.reset()
+        done = False
+        traj = []
+        while not done:
+            with utils.eval_mode(self.agent):
+                action = self.agent.act(obs, sample=False)
+            traj.append(np.concatenate([obs, action]).astype(np.float32))
+            obs, _, terminated, truncated, _ = self.env.step(action)
+            done = terminated or truncated
+
+        if not traj:
+            return
+        sa_batch = np.stack(traj)  # (T, ds+da)
+
+        r_none = self.reward_model.compute_batch(sa_batch, gauge="none")
+        for gauge_name in ("mean_buf", "mean_ref"):
+            r_g = self.reward_model.compute_batch(sa_batch, gauge=gauge_name)
+            shift_g = self.reward_model.get_shift(gauge_name)
+            max_err = float(np.max(np.abs((r_none - r_g) - shift_g)))
+            if max_err > 1e-4:
+                raise AssertionError(
+                    f"RRM gauge-plumbing check failed: gauge={gauge_name} "
+                    f"expected per-step diff={shift_g:.6f}, max_err={max_err:.2e}"
+                )
+
     # ────────────────────────────────────────────────────────────────────────
     # Evaluation
     # ────────────────────────────────────────────────────────────────────────
@@ -246,6 +493,7 @@ class Workspace(object):
         # trends over training, not as absolute values.
         average_proxy_episode_reward = 0
         success_rate                 = 0
+        gauge_proxy_sums = {g: 0.0 for g in VALID_GAUGES}
 
         for episode in range(self.cfg.num_eval_episodes):
             obs  = self.env.reset()
@@ -273,9 +521,20 @@ class Workspace(object):
             # [Gauge experiment, Step 5] Batch proxy return computation.
             if _traj_sa:
                 sa_batch = np.stack(_traj_sa)                # (T, ds+da)
-                # r_hat_batch returns (T, 1) or (T,) averaged over ensemble members
-                proxy_rewards = self.reward_model.r_hat_batch(sa_batch)
-                proxy_episode_reward = float(proxy_rewards.sum())
+                if self.enable_gauge_experiment and isinstance(self.reward_model, GaugedRewardModel):
+                    if self.method == "rrm":
+                        gauge_vals = self.reward_model.proxy_returns_all_gauges(sa_batch)
+                        for g, v in gauge_vals.items():
+                            gauge_proxy_sums[g] += float(v)
+                        proxy_episode_reward = gauge_vals["none"]
+                    else:
+                        gauge_name = self.gauge
+                        proxy_episode_reward = self.reward_model.proxy_return(sa_batch, gauge=gauge_name)
+                        gauge_proxy_sums[gauge_name] += float(proxy_episode_reward)
+                else:
+                    # r_hat_batch returns (T, 1) or (T,) averaged over ensemble members
+                    proxy_rewards = self.reward_model.r_hat_batch(sa_batch)
+                    proxy_episode_reward = float(proxy_rewards.sum())
 
             average_episode_reward       += episode_reward
             average_true_episode_reward  += true_episode_reward
@@ -288,9 +547,25 @@ class Workspace(object):
         average_proxy_episode_reward /= self.cfg.num_eval_episodes
         self.logger.log('eval/episode_reward',      average_episode_reward,      self.step)
         self.logger.log('eval/true_episode_reward', average_true_episode_reward, self.step)
+        self.logger.log('eval/true_return', average_true_episode_reward, self.step)
         self.logger.log('eval/proxy_return',        average_proxy_episode_reward, self.step)
         self.logger.log('eval/return_gap',
                         average_proxy_episode_reward - average_true_episode_reward, self.step)
+        if self.enable_gauge_experiment and isinstance(self.reward_model, GaugedRewardModel):
+            if self.method == "rrm":
+                for g in VALID_GAUGES:
+                    proxy_mean = gauge_proxy_sums[g] / self.cfg.num_eval_episodes
+                    self.logger.log(f"eval/proxy_return_{g}", proxy_mean, self.step)
+                    self.logger.log(f"eval/return_gap_{g}", average_true_episode_reward - proxy_mean, self.step)
+            else:
+                gauge_name = self.gauge
+                proxy_mean = gauge_proxy_sums[gauge_name] / self.cfg.num_eval_episodes
+                self.logger.log(f"eval/proxy_return_{gauge_name}", proxy_mean, self.step)
+                self.logger.log(
+                    f"eval/return_gap_{gauge_name}",
+                    average_true_episode_reward - proxy_mean,
+                    self.step,
+                )
         if self.log_success:
             success_rate = success_rate / self.cfg.num_eval_episodes * 100.0
             self.logger.log('eval/success_rate',        success_rate, self.step)
@@ -415,6 +690,7 @@ class Workspace(object):
         # [Gauge experiment, Step 1] Update zero-mean offsets after full RM training.
         # Must happen before get_gauge_diagnostics so C2 is measured on corrected outputs.
         self.reward_model._update_zero_mean_offsets()
+        self._recompute_and_log_gauge_shifts()
 
         # [Gauge experiment, Step 2] Log gauge diagnostics after RM training.
         # Includes rm/bt_loss_final (C3), rm/param_norm (C1), rm/gauge_gap (C2),
@@ -530,7 +806,7 @@ class Workspace(object):
                     self.reward_model.add_data(obs, action, env_reward, float(done))
 
             # ── Reward hat + replay buffer ────────────────────────────────
-            reward_hat = self.reward_model.r_hat(
+            reward_hat = self._rm_for_sac.r_hat(
                 np.concatenate([obs, action], axis=-1))
             episode_reward      += reward_hat
             true_episode_reward += env_reward
@@ -667,7 +943,7 @@ class Workspace(object):
                     self.reward_model.add_data(obs, action, env_reward, float(done))
 
             # ── Reward hat + replay buffer ────────────────────────────────
-            reward_hat = self.reward_model.r_hat(
+            reward_hat = self._rm_for_sac.r_hat(
                 np.concatenate([obs, action], axis=-1))
             episode_reward      += reward_hat
             true_episode_reward += env_reward
@@ -708,12 +984,13 @@ class Workspace(object):
                 self.reward_model.env_step = self.step
                 self.learn_reward(first_flag=1)
                 self.reward_model.pre_relabel_logging(self.step)
-                self.replay_buffer.relabel_with_predictor(self.reward_model)
+                self.replay_buffer.relabel_with_predictor(self._rm_for_sac)
                 self.agent.reset_critic()
                 self.agent.update_after_reset(
                     self.replay_buffer, self.logger, self.step,
                     gradient_update=cfg.reset_update,
-                    policy_update=True)
+                    policy_update=True,
+                    actor_update_callback=self._on_actor_update)
                 interact_count = 0
 
             elif self.step > warmup_end:
@@ -740,10 +1017,16 @@ class Workspace(object):
                         self.reward_model.env_step = self.step
                         self.learn_reward()
                         self.reward_model.pre_relabel_logging(self.step)
-                        self.replay_buffer.relabel_with_predictor(self.reward_model)
+                        self.replay_buffer.relabel_with_predictor(self._rm_for_sac)
                         interact_count = 0
 
-                self.agent.update(self.replay_buffer, self.logger, self.step, 1)
+                self.agent.update(
+                    self.replay_buffer,
+                    self.logger,
+                    self.step,
+                    1,
+                    actor_update_callback=self._on_actor_update,
+                )
 
             # ── Sanity checks ─────────────────────────────────────────────
             if cfg.sanity_mode and mode != 'baseline':
@@ -759,6 +1042,7 @@ class Workspace(object):
             interact_count += 1
 
         # ── End of training ───────────────────────────────────────────────
+        self._rrm_bit_identity_check()
         self.agent.save(self.work_dir, self.step)
         self.reward_model.save(self.work_dir, self.step)
         if self.tandem_logger is not None:

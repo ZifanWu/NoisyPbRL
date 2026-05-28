@@ -1,0 +1,6 @@
+phase: phase3
+description: Full sweep with all 6 seeds.
+alpha_modes: [low, auto, high]
+seeds: [1, 2, 3, 4, 5, 6]
+envs: [walker_walk, drawer_open, hammer]
+methods: [rrm, pg_rlhf]

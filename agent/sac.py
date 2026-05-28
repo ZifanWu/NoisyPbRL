@@ -256,7 +256,7 @@ class SACAgent(Agent):
             alpha_loss.backward()
             self.log_alpha_optimizer.step()
             
-    def update(self, replay_buffer, logger, step, gradient_update=1):
+    def update(self, replay_buffer, logger, step, gradient_update=1, actor_update_callback=None):
         for index in range(gradient_update):
             obs, action, reward, next_obs, not_done, not_done_no_max = replay_buffer.sample(
                 self.batch_size)
@@ -271,12 +271,22 @@ class SACAgent(Agent):
 
             if step % self.actor_update_frequency == 0:
                 self.update_actor_and_alpha(obs, logger, step, print_flag)
+                if actor_update_callback is not None:
+                    actor_update_callback(obs, step, print_flag)
 
         if step % self.critic_target_update_frequency == 0:
             utils.soft_update_params(self.critic, self.critic_target,
                                      self.critic_tau)
             
-    def update_after_reset(self, replay_buffer, logger, step, gradient_update=1, policy_update=True):
+    def update_after_reset(
+        self,
+        replay_buffer,
+        logger,
+        step,
+        gradient_update=1,
+        policy_update=True,
+        actor_update_callback=None,
+    ):
         for index in range(gradient_update):
             obs, action, reward, next_obs, not_done, not_done_no_max = replay_buffer.sample(
                 self.batch_size)
@@ -291,6 +301,8 @@ class SACAgent(Agent):
 
             if index % self.actor_update_frequency == 0 and policy_update:
                 self.update_actor_and_alpha(obs, logger, step, print_flag)
+                if actor_update_callback is not None:
+                    actor_update_callback(obs, step, print_flag)
 
             if index % self.critic_target_update_frequency == 0:
                 utils.soft_update_params(self.critic, self.critic_target,

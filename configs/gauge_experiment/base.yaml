@@ -1,0 +1,68 @@
+experiment_name: bpref_gauge_experiment
+script: train_PEBBLE.py
+results_dir: results
+reference_dataset_dir: reference_dataset
+
+default_overrides:
+  enable_gauge_experiment: true
+  tandem_mode: baseline
+  gauge_mode: none
+  feed_type: 1
+  teacher_beta: -1
+  teacher_gamma: 1
+  teacher_eps_mistake: 0
+  teacher_eps_skip: 0
+  teacher_eps_equal: 0
+  log_save_tb: true
+  use_wandb: false
+  wandb_project: performative-correction
+  num_eval_episodes: 10
+  n_ref: 10000
+  reference_seed: 0
+  n_shift_sample: 2048
+  pref_subsample: 32
+  replay_subsample: 256
+  perf_n_traj: 1
+  cg_iter: 5
+  eps_ridge: 0.001
+  perf_max_grad_norm: 10.0
+  k_perf: 20
+
+seeds_phase1: [1, 2, 3]
+seeds_phase3: [1, 2, 3, 4, 5, 6]
+gauges: [none, mean_buf, mean_ref, no_tanh, no_tanh_mean_buf, no_tanh_mean_ref]
+
+envs:
+  walker_walk:
+    train_env: walker_walk
+    horizon: 1000
+  drawer_open:
+    train_env: metaworld_drawer-open-v2
+    horizon: 500
+  hammer:
+    train_env: metaworld_hammer-v2
+    horizon: 500
+
+alpha_modes:
+  auto:
+    alpha_mode: auto
+    init_temperature: 0.1
+    learnable_temperature: true
+  low:
+    alpha_mode: low
+    init_temperature: 0.05
+    learnable_temperature: false
+  high:
+    alpha_mode: high
+    init_temperature: 0.5
+    learnable_temperature: false
+
+methods:
+  rrm:
+    method: rrm
+    use_perf_correction: false
+    gauges: [none]
+  pg_rlhf:
+    method: pg_rlhf
+    use_perf_correction: true
+    gauges: [none, mean_buf, mean_ref, no_tanh, no_tanh_mean_buf, no_tanh_mean_ref]

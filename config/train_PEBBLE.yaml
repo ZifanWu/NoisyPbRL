@@ -13,7 +13,7 @@ num_interact: 5000
 reward_lr: 0.0003
 reward_batch: 128
 reward_update: 200
-feed_type: 0
+feed_type: 1
 reset_update: 100
 topK: 5
 ensemble_size: 3
@@ -35,6 +35,26 @@ rm_reset: false
 # on frozen reference segments collected at first RM training event.
 # Default "none" preserves backward compatibility with BPref's original behavior.
 gauge_mode: none
+
+# Post-hoc gauge experiment controls
+enable_gauge_experiment: false
+method: rrm                 # rrm | pg_rlhf
+gauge: none                 # none | mean_buf | mean_ref | no_tanh | no_tanh_mean_buf | no_tanh_mean_ref
+alpha_mode: auto            # auto | low | high
+use_perf_correction: false
+n_ref: 10000
+reference_seed: 0
+n_shift_sample: 2048
+gauge_check_atol: 1e-4
+reference_dataset_dir: reference_dataset
+k_perf: 20
+perf_n_traj: 1
+h_horizon: 1000
+pref_subsample: 64
+replay_subsample: 256
+cg_iter: 8
+eps_ridge: 1e-3
+perf_max_grad_norm: 10.0
 
 # How often (in env steps) to log gauge diagnostics during the policy-training
 # phase.  Used by train_PEBBLE_oneshot.py; ignored by the iterative script.
@@ -64,6 +84,7 @@ log_extra_metrics: false
 log_frequency: 10000
 log_save_tb: true
 use_wandb: false
+wandb_project: performative-correction
 
 # video recorder
 save_video: false
