@@ -3,7 +3,9 @@
 # Gauge PbRL SLURM array submission
 #
 # One array task = one complete run from configs/gauge_experiment/{phase}.yaml.
-# Default MAX_CONCURRENT=2, so at most two GPU jobs run at once.
+# By default there is no Slurm array throttle; the scheduler can run as
+# many tasks as partition/account/GPU availability allows. Set MAX_CONCURRENT
+# to a positive integer to add an explicit array throttle.
 #
 # Usage:
 #   bash gauge_phase1_submit.sh
@@ -11,7 +13,8 @@
 #   bash gauge_phase3_submit.sh
 #
 # Useful overrides:
-#   MAX_CONCURRENT=4 bash gauge_phase1_submit.sh
+#   MAX_CONCURRENT=8 bash gauge_phase1_submit.sh
+#   MAX_CONCURRENT=all bash gauge_phase1_submit.sh
 #   DRY_RUN=true bash gauge_phase1_submit.sh
 #   SKIP_DONE=false bash gauge_phase1_submit.sh
 #   TIME_LIMIT=36:00:00 bash gauge_phase3_submit.sh
@@ -26,7 +29,7 @@
 set -euo pipefail
 
 PHASE="${1:-${PHASE:-phase1}}"
-MAX_CONCURRENT="${MAX_CONCURRENT:-2}"
+MAX_CONCURRENT="${MAX_CONCURRENT:-all}"
 TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 PARTITION="${PARTITION:-dbrown-gpu-np}"
@@ -176,6 +179,21 @@ if [ "$N_CELLS" -le 0 ]; then
 fi
 
 ARRAY_MAX=$((N_CELLS - 1))
+case "$MAX_CONCURRENT" in
+    all|none|unlimited)
+        ARRAY_SPEC="0-${ARRAY_MAX}"
+        ;;
+    ''|0)
+        ARRAY_SPEC="0-${ARRAY_MAX}"
+        ;;
+    *[!0-9]*)
+        echo "ERROR: MAX_CONCURRENT must be a positive integer or one of: all | none | unlimited"
+        exit 1
+        ;;
+    *)
+        ARRAY_SPEC="0-${ARRAY_MAX}%${MAX_CONCURRENT}"
+        ;;
+esac
 JOB_NAME="gauge_${PHASE}"
 TMP_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${JOB_NAME}_XXXXXX.sh")"
 
@@ -348,14 +366,14 @@ chmod +x "$TMP_SCRIPT"
 echo "Generated manifest:"
 echo "  ${RESULTS_DIR}/manifests/manifest_${PHASE}.json"
 echo "Submitting array:"
-echo "  sbatch --array=0-${ARRAY_MAX}%${MAX_CONCURRENT} ${TMP_SCRIPT}"
+echo "  sbatch --array=${ARRAY_SPEC} ${TMP_SCRIPT}"
 echo ""
 
 if [ "$DRY_RUN" = "true" ]; then
     echo "[DRY_RUN] Not submitting. Temporary Slurm script kept at:"
     echo "  $TMP_SCRIPT"
 else
-    sbatch --array="0-${ARRAY_MAX}%${MAX_CONCURRENT}" "$TMP_SCRIPT"
-    echo "Submitted ${N_CELLS} tasks for ${PHASE}; max concurrent = ${MAX_CONCURRENT}."
+    sbatch --array="${ARRAY_SPEC}" "$TMP_SCRIPT"
+    echo "Submitted ${N_CELLS} tasks for ${PHASE}; array spec = ${ARRAY_SPEC}."
     echo "Temporary Slurm script: $TMP_SCRIPT"
 fi
