@@ -18,6 +18,39 @@ from collections import deque
 
 import utils
 import hydra
+from omegaconf import OmegaConf
+
+
+def _flatten_wandb_config(cfg):
+    container = OmegaConf.to_container(cfg, resolve=False)
+    flat = {}
+    gauge_pg_aliases = {
+        "perf_grad": "perf_grad",
+        "gauge_corr": "gauge_corr",
+        "k_perf": "k_perf",
+    }
+
+    def output_key(prefix):
+        if prefix.startswith("gauge.pg."):
+            leaf = prefix.rsplit(".", 1)[-1]
+            return gauge_pg_aliases.get(leaf, f"perf_{leaf}")
+        return prefix
+
+    def visit(prefix, value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_key = str(key)
+                visit(f"{prefix}.{child_key}" if prefix else child_key, child)
+        elif isinstance(value, (list, tuple)):
+            flat[output_key(prefix)] = list(value)
+        else:
+            # Hydra uses "???" for values filled later at runtime, e.g.
+            # agent.params.obs_dim before the environment is constructed.
+            flat[output_key(prefix)] = None if value == "???" else value
+
+    visit("", container)
+    return flat
+
 
 class Workspace(object):
     def __init__(self, cfg):
@@ -32,7 +65,7 @@ class Workspace(object):
             wandb.init(
                 project='performative-correction',
                 name=f'{cfg.env}__{cfg.agent.name}__seed{cfg.seed}',
-                config=dict(cfg),
+                config=_flatten_wandb_config(cfg),
                 notes=socket.gethostname(),
             )
 
