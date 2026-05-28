@@ -205,10 +205,13 @@ class Workspace(object):
 
         if mode == 'baseline':
             os.makedirs(cfg.tandem_log_dir, exist_ok=True)
-            self.tandem_logger = TandemLogger(
-                _default_log_path, obs_dim, act_dim,
-                max_steps=int(cfg.num_train_steps))
-            print(f'[tandem] baseline logger → {_default_log_path}')
+            if os.path.exists(_default_log_path):
+                print(f'[tandem] baseline log already exists, skipping re-creation → {_default_log_path}')
+            else:
+                self.tandem_logger = TandemLogger(
+                    _default_log_path, obs_dim, act_dim,
+                    max_steps=int(cfg.num_train_steps))
+                print(f'[tandem] baseline logger → {_default_log_path}')
         else:
             if not os.path.exists(_log_path):
                 raise FileNotFoundError(
@@ -583,10 +586,11 @@ class Workspace(object):
         # ── (A) BASELINE: query normally + log everything ──────────────────
         if mode == 'baseline':
             # Save RM weights + pool IDs before querying (scoring RM for iv-a)
-            self.tandem_logger.log_query_event_start(
-                idx, self.step,
-                self.reward_model.input_episode_ids,
-                self.reward_model)
+            if self.tandem_logger is not None:
+                self.tandem_logger.log_query_event_start(
+                    idx, self.step,
+                    self.reward_model.input_episode_ids,
+                    self.reward_model)
 
             if first_flag == 1:
                 (labeled_queries,
@@ -597,7 +601,7 @@ class Workspace(object):
                  sa_t_1, sa_t_2, r_t_1, r_t_2,
                  labels, scores) = self.reward_model.disagreement_sampling_with_details()
 
-            if labeled_queries > 0:
+            if labeled_queries > 0 and self.tandem_logger is not None:
                 self.tandem_logger.log_query_event_pairs(
                     idx, sa_t_1, sa_t_2, r_t_1, r_t_2, labels, scores)
 
@@ -703,7 +707,7 @@ class Workspace(object):
             # Always log bt_loss_final even when diagnostic env is unavailable.
             self.logger.log('train/rm_bt_loss_final', self.reward_model.last_bt_loss, self.step)
 
-        if mode == 'baseline':
+        if mode == 'baseline' and self.tandem_logger is not None:
             self.tandem_logger.flush()
 
         self._rm_update_idx += 1
@@ -816,7 +820,7 @@ class Workspace(object):
                                    next_obs, float(done), done_no_max)
 
             # ── Baseline logging ──────────────────────────────────────────
-            if mode == 'baseline':
+            if mode == 'baseline' and self.tandem_logger is not None:
                 self.tandem_logger.log_transition(
                     self.step, obs, action, env_reward,
                     next_obs, float(done), done_no_max)
@@ -953,7 +957,7 @@ class Workspace(object):
                                    next_obs, float(done), done_no_max)
 
             # ── Baseline logging ──────────────────────────────────────────
-            if mode == 'baseline':
+            if mode == 'baseline' and self.tandem_logger is not None:
                 self.tandem_logger.log_transition(
                     self.step, obs, action, env_reward,
                     next_obs, float(done), done_no_max)
@@ -973,7 +977,7 @@ class Workspace(object):
             if self.step == warmup_end:
                 frac = self._compute_frac()
                 self.reward_model.change_batch(frac)
-                if mode == 'baseline':
+                if mode == 'baseline' and self.tandem_logger is not None:
                     self.tandem_logger.log_schedule(self.step, frac, self.reward_model.mb_size)
 
                 new_margin = (np.mean(self._avg_train_true_return)
@@ -998,7 +1002,7 @@ class Workspace(object):
                     if interact_count == cfg.num_interact:
                         frac = self._compute_frac()
                         self.reward_model.change_batch(frac)
-                        if mode == 'baseline':
+                        if mode == 'baseline' and self.tandem_logger is not None:
                             self.tandem_logger.log_schedule(
                                 self.step, frac, self.reward_model.mb_size)
 
