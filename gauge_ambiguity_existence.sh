@@ -9,11 +9,12 @@
 # ==============================================================
 
 # ===================== CONFIGURE BELOW ========================
-envs=(hammer drawer_open door_open door_close window_close)
+envs=(drawer_open door_open door_close window_close)
 teacher_types=(oracle noisy mistake myopic skip)
 feed_types=(0 1)
-gauge_modes=(l2) # l2 none zero_mean_ref
-seeds=(12345 23451 34512)   # 6 seeds
+gauge_modes=(l2 none zero_mean_ref) # l2 none zero_mean_ref
+conditions=(oneshot)  # which RM conditions to run: (iterative oneshot)
+seeds=(34512)   # 6 seeds
 #  12345 23451 34512 45123 51234 67890 78906 89067 90678 6789
 
 # Default teacher-specific params (extend to arrays to sweep multiple values)
@@ -35,6 +36,7 @@ echo "  envs         : ${envs[*]}"
 echo "  teachers     : ${teacher_types[*]}"
 echo "  feed_types   : ${feed_types[*]}"
 echo "  gauge_modes  : ${gauge_modes[*]}"
+echo "  conditions   : ${conditions[*]}"
 echo "  seeds        : ${seeds[*]}"
 echo "  rm_reset     : $rm_reset"
 echo "  use_wandb    : $use_wandb"
@@ -143,21 +145,34 @@ for env in "${envs[@]}"; do
 
             for feed_type in "${feed_types[@]}"; do
             for gauge_mode in "${gauge_modes[@]}"; do
+            for condition in "${conditions[@]}"; do
 
-                echo "--- env=${env}  teacher=${teacher}  feed_type=${feed_type}  gauge=${gauge_mode} ---"
+                # Abbreviated labels for job names and log output
+                case "$gauge_mode" in
+                    l2)            g_label="l2" ;;
+                    none)          g_label="no" ;;
+                    zero_mean_ref) g_label="zm" ;;
+                    *)             g_label="${gauge_mode:0:2}" ;;
+                esac
+                case "$condition" in
+                    iterative) c_label="it"; dir_prefix="PEBBLE_init" ;;
+                    oneshot)   c_label="os"; dir_prefix="PEBBLE_oneshot_init" ;;
+                esac
 
-                # Full path to the gauge-specific experiment directory
+                echo "--- env=${env}  teacher=${teacher}  feed_type=${feed_type}  gauge=${gauge_mode}  cond=${condition} ---"
+
+                # Full path to the gauge-specific experiment directory (same for both conditions)
                 gauge_base="${EXP_DIR}/${env_name}/H256_L3_lr0.0003/${teacher_dir}/label_smooth_0.0/schedule_0/tandem_baseline/gauge_${gauge_mode}"
 
-                # Collect seeds that still need to run
+                # Collect seeds that still need to run (condition-specific dir prefix)
                 pending=()
                 for seed in "${seeds[@]}"; do
                     found=$(find "$gauge_base" -maxdepth 1 -type d \
-                        -name "*maxfeed${resolved_feedback}*sample${feed_type}*_rm${rm_reset}_seed${seed}" \
+                        -name "${dir_prefix}*maxfeed${resolved_feedback}*sample${feed_type}*_rm${rm_reset}_seed${seed}" \
                         2>/dev/null | head -n1)
                     if [ -z "$found" ] && [ "$rm_reset" = "false" ]; then
                         found=$(find "$gauge_base" -maxdepth 1 -type d \
-                            -name "*maxfeed${resolved_feedback}*sample${feed_type}*seed${seed}" \
+                            -name "${dir_prefix}*maxfeed${resolved_feedback}*sample${feed_type}*seed${seed}" \
                             2>/dev/null | grep -v "_rm" | head -n1)
                     fi
                     if [ -n "$found" ]; then
@@ -170,24 +185,21 @@ for env in "${envs[@]}"; do
 
                 [ ${#pending[@]} -eq 0 ] && { echo "  [ALL DONE]"; echo ""; continue; }
 
-                # Abbreviated gauge label for job name (l2 → l2, none → no, zero_mean_ref → zm)
-                case "$gauge_mode" in
-                    l2)            g_label="l2" ;;
-                    none)          g_label="no" ;;
-                    zero_mean_ref) g_label="zm" ;;
-                    *)             g_label="${gauge_mode:0:2}" ;;
-                esac
-
                 # Submit one job per pending seed
                 for seed in "${pending[@]}"; do
                     cmd=$(build_cmd "$raw_cmd" "$seed" "$feed_type" "$teacher" \
                           "$teacher_gamma" "$teacher_eps_mistake" "$gauge_mode")
-                    job_name="${env:0:4}_${teacher:0:3}_f${feed_type}_${g_label}_s${seed}"
+                    # For one-shot: swap in the oneshot script (config picked up from its yaml)
+                    if [ "$condition" = "oneshot" ]; then
+                        cmd=$(echo "$cmd" | sed 's|train_PEBBLE\.py|train_PEBBLE_oneshot.py|')
+                    fi
+                    job_name="${env:0:4}_${teacher:0:3}_f${feed_type}_${g_label}_${c_label}_s${seed}"
                     tmp_script=$(mktemp "${SCRIPT_DIR}/tmp_slurm_XXXXXX.sh")
                     cat > "$tmp_script" << EOT
 #!/bin/bash
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
+#SBATCH --mem=20g
 #SBATCH --ntasks=1
 #SBATCH --job-name=${job_name}
 #SBATCH --time=12:00:00
@@ -210,6 +222,7 @@ EOT
                 done
 
                 echo ""
+            done  # condition
             done  # gauge_mode
             done  # feed_type
         done  # param

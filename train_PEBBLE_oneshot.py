@@ -57,7 +57,7 @@ class OneShotWorkspace(Workspace):
         # Use the full preference budget in a single event.
         frac = self._compute_frac()
         self.reward_model.change_batch(frac)
-        if mode == 'baseline':
+        if mode == 'baseline' and self.tandem_logger is not None:
             self.tandem_logger.log_schedule(self.step, frac, self.reward_model.mb_size)
 
         new_margin = (np.mean(self._avg_train_true_return)
@@ -111,7 +111,7 @@ class OneShotWorkspace(Workspace):
                                next_obs, float(done), done_no_max)
 
         # Baseline transition log
-        if mode == 'baseline':
+        if mode == 'baseline' and self.tandem_logger is not None:
             self.tandem_logger.log_transition(
                 self.step, obs, action, env_reward,
                 next_obs, float(done), done_no_max)
