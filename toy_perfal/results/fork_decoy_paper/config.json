@@ -1,0 +1,208 @@
+{
+  "preset": "paper",
+  "output_name": "fork_decoy_paper",
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29
+  ],
+  "rounds": 25,
+  "init_labels": 16,
+  "warmstart_critical": 6,
+  "batch_size": 8,
+  "candidate_pairs": 8000,
+  "beta": 5.0,
+  "l2": 0.001,
+  "policy_lr": 0.5,
+  "mixed_alpha": 0.7,
+  "grid": [
+    5,
+    5
+  ],
+  "horizon": 7,
+  "start": [
+    0,
+    2
+  ],
+  "fork": [
+    2,
+    2
+  ],
+  "goal": [
+    4,
+    3
+  ],
+  "trap": [
+    4,
+    1
+  ],
+  "safe": [
+    4,
+    2
+  ],
+  "decoys": [
+    [
+      0,
+      4
+    ],
+    [
+      1,
+      4
+    ],
+    [
+      2,
+      4
+    ],
+    [
+      3,
+      4
+    ],
+    [
+      0,
+      0
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      3,
+      0
+    ]
+  ],
+  "feature_names": [
+    "goal",
+    "trap",
+    "safe",
+    "decoy_0_4_up",
+    "decoy_0_4_down",
+    "decoy_0_4_left",
+    "decoy_0_4_right",
+    "decoy_0_4_stay",
+    "decoy_1_4_up",
+    "decoy_1_4_down",
+    "decoy_1_4_left",
+    "decoy_1_4_right",
+    "decoy_1_4_stay",
+    "decoy_2_4_up",
+    "decoy_2_4_down",
+    "decoy_2_4_left",
+    "decoy_2_4_right",
+    "decoy_2_4_stay",
+    "decoy_3_4_up",
+    "decoy_3_4_down",
+    "decoy_3_4_left",
+    "decoy_3_4_right",
+    "decoy_3_4_stay",
+    "decoy_0_0_up",
+    "decoy_0_0_down",
+    "decoy_0_0_left",
+    "decoy_0_0_right",
+    "decoy_0_0_stay",
+    "decoy_1_0_up",
+    "decoy_1_0_down",
+    "decoy_1_0_left",
+    "decoy_1_0_right",
+    "decoy_1_0_stay",
+    "decoy_2_0_up",
+    "decoy_2_0_down",
+    "decoy_2_0_left",
+    "decoy_2_0_right",
+    "decoy_2_0_stay",
+    "decoy_3_0_up",
+    "decoy_3_0_down",
+    "decoy_3_0_left",
+    "decoy_3_0_right",
+    "decoy_3_0_stay",
+    "step"
+  ],
+  "true_reward": [
+    1.0,
+    -1.2,
+    0.2,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.01
+  ],
+  "methods": [
+    "on_policy_random",
+    "pool_uniform",
+    "entropy",
+    "disagreement",
+    "d_optimal",
+    "perfal_topB",
+    "perfal_greedy",
+    "perfal_mixed",
+    "perfal_oracle",
+    "perfal_random_v"
+  ]
+}

@@ -83,3 +83,32 @@ This sweeps:
 
 The default summary is intentionally labeled preliminary when generated from
 the quick preset.
+
+## Fork-Decoy Direction-Limited Environment
+
+`run_fork_decoy.py` adds a second toy environment intended to test the regime
+where PerfAL should help. The policy starts near a goal/trap fork, while the
+candidate pool contains many uncertain zero-reward decoy features. This asks
+whether directional uncertainty reduction can avoid wasting labels on decoys.
+
+Quick run:
+
+```bash
+~/miniconda3/envs/bpref/bin/python toy_perfal/run_fork_decoy.py --preset quick
+```
+
+Paper-style run:
+
+```bash
+~/miniconda3/envs/bpref/bin/python toy_perfal/run_fork_decoy.py --preset paper
+```
+
+The fork-decoy comparison includes `perfal_mixed`, a coverage-safeguarded rule
+that greedily combines normalized PerfAL gain with normalized D-optimal gain:
+
+```text
+score = alpha * PerfAL_gain + (1 - alpha) * D_optimal_gain
+```
+
+Outputs are written to `toy_perfal/fork_decoy_summary.md` and
+`toy_perfal/results/<output-name>/`.
