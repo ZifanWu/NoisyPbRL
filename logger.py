@@ -52,6 +52,7 @@ AGENT_TRAIN_FORMAT = {
         ('batch_reward', 'BR', 'float'),
     ],
 }
+AGENT_TRAIN_FORMAT['sac_metaworld'] = AGENT_TRAIN_FORMAT['sac']
 
 
 class AverageMeter(object):

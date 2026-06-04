@@ -1,0 +1,82 @@
+defaults:
+    - agent: sac_metaworld
+
+# ── inherited from train_PEBBLE.yaml ────────────────────────────────────────
+experiment: PEBBLE_axis2
+
+segment: 50
+activation: tanh
+num_seed_steps: 1000
+num_unsup_steps: 9000
+num_interact: 10000
+reward_lr: 0.0003
+reward_batch: 50
+reward_update: 10
+feed_type: 0
+reset_update: 100
+topK: 5
+ensemble_size: 5          # increased to 5 for ensemble spread measurement
+max_feedback: 2000        # Metaworld default: many 50-query feedback rounds
+large_batch: 10
+label_margin: 0.0
+teacher_beta: 5            # BT teacher; β scaled by 1/std(|ΔR|) so P(mistake) at median |ΔR| ≈ σ(-5) ≈ 0.7%
+teacher_gamma: 1
+teacher_eps_mistake: 0     # mistake teacher reserved for mis confirmatory run only
+teacher_eps_skip: 0
+teacher_eps_equal: 0
+bt_normalize_by_gap_std: true   # scale β by 1/std(|ΔR|) so cleanliness is invariant to reward scale drift
+bt_gap_ema_alpha: 0.9
+
+rm_reset: false
+reward_schedule: 0
+
+num_train_steps: 1000000
+replay_buffer_capacity: ${num_train_steps}
+
+eval_frequency: 10000
+num_eval_episodes: 10
+gpu: 0
+device: cuda:${gpu}
+
+dormant_log_period: 5000
+dormant_threshold: 0.1
+bt_log_period: 5000
+
+log_frequency: 10000
+log_save_tb: true
+use_wandb: true
+
+save_video: false
+seed: 1
+env: metaworld_door-open-v2
+gradient_update: 1
+
+# ── Axis 2 Tier B extensions ─────────────────────────────────────────────────
+# Control condition defaults (all errors low)
+rm_hidden_dim: 256
+rm_num_layers: 3
+rm_output_activation: tanh
+
+buffer_window_rounds: 3   # keep last k rounds of labeled pairs; same across all conditions for isolation
+
+# Yardstick override — by spec, ψ_fin/ψ_inf are refits of the SAME class as the deployed RM
+# (rm_hidden_dim / rm_num_layers / rm_output_activation).  In the mis condition that means
+# ψ_inf is a 16×1 fit on abundant clean labels — its residual vs R* IS the irreducible
+# capacity floor of the diagnosed class, which is exactly what e_mis is supposed to measure.
+# Leave these null; only override for cross-class sanity-check smoke tests.
+yardstick_hidden_dim: null
+yardstick_num_layers: null
+yardstick_output_activation: null
+
+monitor_frequency: 20000
+probe_seg_size: 200
+probe_size: 1024
+kappa_warmup_steps: 10
+kappa_fresh_prefs: 64
+checkpoint_step: 500000
+
+# local artifact output path
+hydra:
+    name: ${env}
+    run:
+        dir: /home/zifan/NoisyPbRL/exp/axis2_tier_b/${env}/control/seed${seed}

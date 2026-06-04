@@ -26,6 +26,8 @@ def gen_net(in_size=1, out_size=1, H=128, n_layers=3, activation='tanh'):
         net.append(nn.Tanh())
     elif activation == 'sig':
         net.append(nn.Sigmoid())
+    elif activation == 'none':
+        pass  # pure affine output; BT loss is convex in ψ (used for e_mis confirmatory run)
     else:
         net.append(nn.ReLU())
 
@@ -94,7 +96,13 @@ class RewardModel:
                  dormant_threshold=0.1,
                  use_wandb=False,
                  bt_log_period=5000,
-                 feed_type=0):
+                 feed_type=0,
+                 hidden_dim=256,
+                 num_layers=3,
+                 output_activation='tanh',
+                 buffer_window_rounds=None,
+                 bt_normalize_by_gap_std=False,
+                 bt_gap_ema_alpha=0.9):
         
         # train data is trajectories, must process to sa and s..   
         self.ds = ds
@@ -107,6 +115,9 @@ class RewardModel:
         self.model = None
         self.max_size = max_size
         self.activation = activation
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.output_activation = output_activation
         self.size_segment = size_segment
         
         self.capacity = int(capacity)
@@ -115,6 +126,19 @@ class RewardModel:
         self.buffer_label = np.empty((self.capacity, 1), dtype=np.float32)
         self.buffer_index = 0
         self.buffer_full = False
+
+        # on-policy window: keep labeled pairs from the last buffer_window_rounds rounds only.
+        # When the (k+1)-th round is added, the oldest round's pairs are compacted out.
+        # None = accumulate forever (original behaviour).
+        self.buffer_window_rounds = buffer_window_rounds
+        self.round_sizes = []  # n_pairs added per stored round, oldest first
+
+        # BT-β scaled by running std of |ΔR|: keeps effective label cleanliness constant as the
+        # policy improves and segment-return scales drift. teacher_beta becomes a unitless target
+        # for β·std(|ΔR|); P(mistake) at median |ΔR| ≈ σ(-teacher_beta).
+        self.bt_normalize_by_gap_std = bt_normalize_by_gap_std
+        self.bt_gap_ema_alpha = bt_gap_ema_alpha
+        self.gap_std_ema = None  # running EMA of std(|ΔR|), updated each get_label call
                 
         self.construct_ensemble()
         self.inputs = []
@@ -415,8 +439,9 @@ class RewardModel:
     def construct_ensemble(self):
         for i in range(self.de):
             model = nn.Sequential(*gen_net(in_size=self.ds+self.da,
-                                           out_size=1, H=256, n_layers=3,
-                                           activation=self.activation)).float().to(device)
+                                           out_size=1, H=self.hidden_dim,
+                                           n_layers=self.num_layers,
+                                           activation=self.output_activation)).float().to(device)
             self.ensemble.append(model)
             self.paramlst.extend(model.parameters())
 
@@ -546,12 +571,49 @@ class RewardModel:
             torch.save(
                 self.ensemble[member].state_dict(), '%s/reward_model_%s_%s.pt' % (model_dir, step, member)
             )
-            
+        # Persist the data buffers and teacher EMA state.  Without this, payoff.py loads a
+        # checkpoint with empty rm.inputs/rm.targets and remedies cannot collect fresh
+        # on-policy pairs.
+        import pickle
+        max_len = self.capacity if self.buffer_full else self.buffer_index
+        state = {
+            'inputs': self.inputs,
+            'targets': self.targets,
+            'buffer_seg1': self.buffer_seg1[:max_len].copy(),
+            'buffer_seg2': self.buffer_seg2[:max_len].copy(),
+            'buffer_label': self.buffer_label[:max_len].copy(),
+            'buffer_index': self.buffer_index,
+            'buffer_full': self.buffer_full,
+            'round_sizes': list(self.round_sizes),
+            'gap_std_ema': self.gap_std_ema,
+        }
+        with open('%s/reward_model_%s_data.pkl' % (model_dir, step), 'wb') as f:
+            pickle.dump(state, f)
+
     def load(self, model_dir, step):
         for member in range(self.de):
             self.ensemble[member].load_state_dict(
                 torch.load('%s/reward_model_%s_%s.pt' % (model_dir, step, member))
             )
+        # Restore the data buffers / teacher EMA so query sampling and remedy refits work.
+        # Skipped silently if the data pickle is absent (back-compat with old checkpoints).
+        import pickle, os
+        data_path = '%s/reward_model_%s_data.pkl' % (model_dir, step)
+        if not os.path.exists(data_path):
+            return
+        with open(data_path, 'rb') as f:
+            state = pickle.load(f)
+        self.inputs = state['inputs']
+        self.targets = state['targets']
+        n = len(state['buffer_label'])
+        if n > 0:
+            self.buffer_seg1[:n] = state['buffer_seg1']
+            self.buffer_seg2[:n] = state['buffer_seg2']
+            self.buffer_label[:n] = state['buffer_label']
+        self.buffer_index = state['buffer_index']
+        self.buffer_full = state['buffer_full']
+        self.round_sizes = list(state['round_sizes'])
+        self.gap_std_ema = state['gap_std_ema']
     
     def get_train_acc(self):
         ensemble_acc = np.array([0 for _ in range(self.de)])
@@ -624,6 +686,29 @@ class RewardModel:
 
     def put_queries(self, sa_t_1, sa_t_2, labels):
         total_sample = sa_t_1.shape[0]
+        labels = labels.reshape(-1, 1) if labels.ndim == 1 else labels
+
+        if self.buffer_window_rounds is not None:
+            # On-policy window mode: evict oldest round(s) before adding the new one so the
+            # buffer never holds more than buffer_window_rounds rounds of labeled pairs.
+            self.round_sizes.append(total_sample)
+            while len(self.round_sizes) > self.buffer_window_rounds:
+                evict_n = self.round_sizes.pop(0)
+                keep = self.buffer_index - evict_n
+                if keep > 0:
+                    # Compact: shift remaining pairs to the front of the buffer.
+                    self.buffer_seg1[:keep] = self.buffer_seg1[evict_n:self.buffer_index].copy()
+                    self.buffer_seg2[:keep] = self.buffer_seg2[evict_n:self.buffer_index].copy()
+                    self.buffer_label[:keep] = self.buffer_label[evict_n:self.buffer_index].copy()
+                self.buffer_index = max(keep, 0)
+            end = self.buffer_index + total_sample
+            self.buffer_seg1[self.buffer_index:end] = sa_t_1
+            self.buffer_seg2[self.buffer_index:end] = sa_t_2
+            self.buffer_label[self.buffer_index:end] = labels
+            self.buffer_index = end
+            # buffer_full stays False in window mode: compaction keeps us within capacity
+            return
+
         next_index = self.buffer_index + total_sample
         if next_index >= self.capacity:
             self.buffer_full = True
@@ -678,9 +763,23 @@ class RewardModel:
             
         rational_labels = 1*(sum_r_t_1 < sum_r_t_2)
         if self.teacher_beta > 0: # Bradley-Terry rational model
-            r_hat = torch.cat([torch.Tensor(sum_r_t_1), 
+            # Optionally scale β by 1/std(|ΔR|) so the effective noise level is invariant to
+            # the policy's reward scale.  Without this, a fixed numeric β implies a different
+            # mistake rate as the policy improves and segment returns grow.
+            effective_beta = self.teacher_beta
+            if self.bt_normalize_by_gap_std:
+                gap = np.abs(sum_r_t_1 - sum_r_t_2).reshape(-1)
+                cur_std = float(gap.std()) if gap.size > 1 else float(np.abs(gap).mean())
+                if cur_std > 1e-8:
+                    if self.gap_std_ema is None:
+                        self.gap_std_ema = cur_std
+                    else:
+                        a = self.bt_gap_ema_alpha
+                        self.gap_std_ema = a * self.gap_std_ema + (1.0 - a) * cur_std
+                    effective_beta = self.teacher_beta / self.gap_std_ema
+            r_hat = torch.cat([torch.Tensor(sum_r_t_1),
                                torch.Tensor(sum_r_t_2)], axis=-1)
-            r_hat = r_hat*self.teacher_beta
+            r_hat = r_hat * effective_beta
             ent = F.softmax(r_hat, dim=-1)[:, 1]
             labels = torch.bernoulli(ent).int().numpy().reshape(-1, 1)
         else:

@@ -1,0 +1,89 @@
+defaults:
+    - agent: sac_metaworld
+
+# Mis-only condition: frequent relabeling, clean labels, LIMITED RM CAPACITY.
+# Primary knob: rm_hidden_dim + rm_num_layers (swept via CLI override).
+# Default here: 1-layer MLP, width 16.  Override with rm_hidden_dim=8/32/64 for sweep.
+# Confirmatory linear-head run: rm_num_layers=0, rm_output_activation=none.
+#
+# With abundant clean labels but under-complete RM, e_mis is non-zero and IRREDUCIBLE.
+# GoF should remain high; κ̂ and ensemble spread should stay low (blind-spot claim H2.3).
+
+experiment: PEBBLE_axis2_mis
+
+segment: 50
+activation: tanh
+num_seed_steps: 1000
+num_unsup_steps: 9000
+num_interact: 10000          # frequent relabeling (low e_shift)
+reward_lr: 0.0003
+reward_batch: 50
+reward_update: 10
+feed_type: 0
+reset_update: 100
+topK: 5
+ensemble_size: 5
+max_feedback: 2000          # sufficient labels (keeps e_epi low)
+large_batch: 10
+label_margin: 0.0
+teacher_beta: 5             # BT teacher, high β = ~0.7% mistake rate; same as control/shift
+teacher_gamma: 1
+teacher_eps_mistake: 0      # override at CLI for confirmatory run: teacher_eps_mistake=0.1
+teacher_eps_skip: 0
+teacher_eps_equal: 0
+bt_normalize_by_gap_std: true
+bt_gap_ema_alpha: 0.9
+
+rm_reset: false
+reward_schedule: 0
+
+num_train_steps: 1000000
+replay_buffer_capacity: ${num_train_steps}
+
+eval_frequency: 10000
+num_eval_episodes: 10
+gpu: 0
+device: cuda:${gpu}
+
+dormant_log_period: 5000
+dormant_threshold: 0.1
+bt_log_period: 5000
+
+log_frequency: 10000
+log_save_tb: true
+use_wandb: true
+
+save_video: false
+seed: 1
+env: metaworld_door-open-v2
+gradient_update: 1
+
+# MIS KNOB: limited RM capacity → irreducible bias floor.
+# Sweep: rm_hidden_dim in {8, 16, 32, 64} via CLI override (python ... rm_hidden_dim=32).
+# Confirmatory: rm_num_layers=0, rm_output_activation=none (pure affine, convex BT loss).
+rm_hidden_dim: 16
+rm_num_layers: 1
+rm_output_activation: tanh
+
+buffer_window_rounds: 3
+
+# Yardstick = deployed class (16×1) by spec.  ψ_inf with abundant clean labels is the
+# irreducible floor of the 16×1 class — e_mis = gauge-fixed L2(ψ_inf − R*) captures the
+# nonlinear-shape mismatch a 16×1 MLP cannot fit (gauge_fix removes scale+shift only,
+# not functional form).  Earlier worry that "e_mis collapses to zero" was wrong: gauge_fix
+# can't hide capacity-induced shape error.
+yardstick_hidden_dim: null
+yardstick_num_layers: null
+yardstick_output_activation: null
+
+monitor_frequency: 20000
+probe_seg_size: 200
+probe_size: 1024
+kappa_warmup_steps: 10
+kappa_fresh_prefs: 64
+checkpoint_step: 500000
+
+hydra:
+    name: ${env}
+    run:
+        dir: /home/zifan/NoisyPbRL/exp/axis2_tier_b/${env}/mis_h${rm_hidden_dim}_l${rm_num_layers}/seed${seed}

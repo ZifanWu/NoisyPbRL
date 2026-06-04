@@ -1,0 +1,81 @@
+defaults:
+    - agent: sac_metaworld
+
+# Shift-only condition: rare relabeling → policy drifts off RM's training support.
+# Primary knob: num_interact=100000 (10× less frequent relabeling than Metaworld control).
+# All other error sources suppressed: clean labels, full-capacity RM.
+
+experiment: PEBBLE_axis2_shift
+
+segment: 50
+activation: tanh
+num_seed_steps: 1000
+num_unsup_steps: 9000
+num_interact: 100000         # SHIFT KNOB: 10× rarer relabeling
+reward_lr: 0.0003
+reward_batch: 50
+reward_update: 10
+feed_type: 0
+reset_update: 100
+topK: 5
+ensemble_size: 5
+max_feedback: 2000
+large_batch: 10
+label_margin: 0.0
+teacher_beta: 5             # BT teacher, same high β as control/mis for comparability
+teacher_gamma: 1
+teacher_eps_mistake: 0
+teacher_eps_skip: 0
+teacher_eps_equal: 0
+bt_normalize_by_gap_std: true
+bt_gap_ema_alpha: 0.9
+
+rm_reset: false
+reward_schedule: 0
+
+num_train_steps: 1000000
+replay_buffer_capacity: ${num_train_steps}
+
+eval_frequency: 10000
+num_eval_episodes: 10
+gpu: 0
+device: cuda:${gpu}
+
+dormant_log_period: 5000
+dormant_threshold: 0.1
+bt_log_period: 5000
+
+log_frequency: 10000
+log_save_tb: true
+use_wandb: true
+
+save_video: false
+seed: 1
+env: metaworld_door-open-v2
+gradient_update: 1
+
+rm_hidden_dim: 256          # full capacity (no misspecification)
+rm_num_layers: 3
+rm_output_activation: tanh
+
+# On-policy window: keep the last 3 relabeling rounds' pairs only.
+# With num_interact=100000 and mb_size=50, this gives 150 labeled pairs spanning ~3 policy snapshots.
+# Prevents old-policy pairs from contaminating ψ_cur's training distribution,
+# keeping e_shift a clean measure of support mismatch rather than mixture-fitting noise.
+buffer_window_rounds: 3
+
+yardstick_hidden_dim: null   # spec: ψ_fin/ψ_inf use deployed class (rm_hidden_dim / rm_num_layers)
+yardstick_num_layers: null
+yardstick_output_activation: null
+
+monitor_frequency: 20000
+probe_seg_size: 200
+probe_size: 1024
+kappa_warmup_steps: 10
+kappa_fresh_prefs: 64
+checkpoint_step: 500000
+
+hydra:
+    name: ${env}
+    run:
+        dir: /home/zifan/NoisyPbRL/exp/axis2_tier_b/${env}/shift/seed${seed}

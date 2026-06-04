@@ -310,7 +310,7 @@ class Workspace:
             import wandb
             import socket
             wandb.init(
-                project='NoisyPbRL',
+                project='roo_error_dissection',
                 name=f'{cfg.env}__static_sac__seed{cfg.seed}',
                 config=dict(cfg),
                 notes=socket.gethostname(),

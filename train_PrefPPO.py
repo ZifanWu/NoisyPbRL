@@ -193,7 +193,7 @@ if __name__ == "__main__":
         import wandb
         wandb.tensorboard.patch(root_logdir=args.tensorboard_log)
         wandb.init(
-            project='NoisyPbRL',
+            project='roo_error_dissection',
             name=f'{env_name}__prefppo__seed{args.seed}',
             config=vars(args),
             sync_tensorboard=True,

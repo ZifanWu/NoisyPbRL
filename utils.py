@@ -15,6 +15,20 @@ from collections import deque
 from skimage.util.shape import view_as_windows
 from torch import nn
 from torch import distributions as pyd
+
+def _ensure_mujoco_py_library_path():
+    """Make MuJoCo 2.1 and NVIDIA libs visible before importing mujoco_py."""
+    candidates = [
+        os.path.expanduser('~/.mujoco/mujoco210/bin'),
+        '/usr/lib/nvidia',
+    ]
+    parts = [p for p in os.environ.get('LD_LIBRARY_PATH', '').split(':') if p]
+    for candidate in candidates:
+        if os.path.isdir(candidate) and candidate not in parts:
+            parts.append(candidate)
+    if parts:
+        os.environ['LD_LIBRARY_PATH'] = ':'.join(parts)
+
     
 def make_env(cfg):
     """Helper function to create dm_control environment"""
@@ -60,6 +74,7 @@ def tie_weights(src, trg):
     trg.bias = src.bias
     
 def make_metaworld_env(cfg):
+    _ensure_mujoco_py_library_path()
     import metaworld
     import metaworld.envs.mujoco.env_dict as _env_dict
     env_name = cfg.env.replace('metaworld_','')
@@ -77,6 +92,7 @@ def make_metaworld_env(cfg):
     return TimeLimit(StepAPICompatibility(NormalizedBoxEnv(env), output_truncation_bool=True), env.max_path_length)
 
 def ppo_make_metaworld_env(env_id, seed):
+    _ensure_mujoco_py_library_path()
     import metaworld
     import metaworld.envs.mujoco.env_dict as _env_dict
     env_name = env_id.replace('metaworld_','')
