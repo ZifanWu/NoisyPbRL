@@ -21,6 +21,7 @@ class DoubleQCritic(nn.Module):
         self.dormant_threshold = dormant_threshold
         self._grad_steps = 0
         self._prev_dormant_set_q1 = None
+        self.wandb_dormant_logging = True
 
     @staticmethod
     def _get_penultimate_activations(net, x):
@@ -32,6 +33,8 @@ class DoubleQCritic(nn.Module):
         return last_hidden_act
 
     def log_dormant_stats(self, obs, action, env_step=0):
+        if not self.wandb_dormant_logging:
+            return
         self._grad_steps += 1
         if self._grad_steps % self.dormant_log_period != 0:
             return

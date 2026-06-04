@@ -101,6 +101,8 @@ _AXIS2_CONFIG_NAME, sys.argv = _extract_config_name(sys.argv)
 class Workspace(BaseWorkspace):
     def __init__(self, cfg):
         super().__init__(cfg)
+        if hasattr(self.agent, 'critic'):
+            self.agent.critic.wandb_dormant_logging = False
 
         # Read capacity knob params with defaults (getattr is safe on Hydra DictConfig).
         rm_hidden_dim = getattr(cfg, 'rm_hidden_dim', 256)
@@ -126,7 +128,8 @@ class Workspace(BaseWorkspace):
             teacher_eps_equal=cfg.teacher_eps_equal,
             dormant_log_period=cfg.dormant_log_period,
             dormant_threshold=cfg.dormant_threshold,
-            use_wandb=cfg.use_wandb,
+            # Axis 2 W&B is intentionally limited to run/eval and axis2/* metrics.
+            use_wandb=False,
             bt_log_period=cfg.bt_log_period,
             feed_type=cfg.feed_type,
             capacity=cfg.max_feedback * cfg.large_batch,

@@ -461,10 +461,12 @@ than to finite-sample variance.
 
 ### How to run
 
-W&B is the primary live dashboard for Axis 2. Each run logs normal train/eval metrics plus
+W&B is the primary live dashboard for Axis 2. Each run logs core train/eval metrics plus
 `axis2/*` monitor metrics (`axis2/kappa_hat`, `axis2/ensemble_spread`, `axis2/gof_deployed`,
-`axis2/e_shift`, `axis2/e_epi`, `axis2/e_mis`, etc.). The local `axis2_metrics.csv` mirrors the
-same monitor rows for offline analysis and reproducibility.
+`axis2/e_shift`, `axis2/e_epi`, `axis2/e_mis`, etc.). Low-level diagnostics such as
+`reward_model/*`, BT histograms, dormant rates, gradient norms, update ratios, and `critic/*`
+dormant stats are intentionally kept out of W&B. The local `axis2_metrics.csv` mirrors the same
+monitor rows for offline analysis and reproducibility.
 
 Log in once before launching runs:
 

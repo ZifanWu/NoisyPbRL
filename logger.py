@@ -55,6 +55,27 @@ AGENT_TRAIN_FORMAT = {
 AGENT_TRAIN_FORMAT['sac_metaworld'] = AGENT_TRAIN_FORMAT['sac']
 
 
+WANDB_SCALAR_ALLOWLIST = {
+    'train/episode',
+    'train/episode_reward',
+    'train/true_episode_reward',
+    'train/episode_success',
+    'train/true_episode_success',
+    'train/reward_model_acc',
+    'train/batch_reward',
+    'train/total_feedback',
+    'train/labeled_feedback',
+    'train/noisy_feedback',
+    'train/duration',
+    'train/total_duration',
+    'eval/episode',
+    'eval/episode_reward',
+    'eval/true_episode_reward',
+    'eval/true_episode_success',
+    'eval/success_rate',
+}
+
+
 class AverageMeter(object):
     def __init__(self):
         self._sum = 0
@@ -234,10 +255,16 @@ class Logger(object):
             import wandb
             wandb_data = {}
             for k, v in train_data.items():
-                if k != 'step':
-                    wandb_data[f'train/{k}'] = v
+                if k == 'step':
+                    continue
+                wb_key = f'train/{k}'
+                if wb_key in WANDB_SCALAR_ALLOWLIST:
+                    wandb_data[wb_key] = v
             for k, v in eval_data.items():
-                if k != 'step':
-                    wandb_data[f'eval/{k}'] = v
+                if k == 'step':
+                    continue
+                wb_key = f'eval/{k}'
+                if wb_key in WANDB_SCALAR_ALLOWLIST:
+                    wandb_data[wb_key] = v
             if wandb_data:
                 wandb.log(wandb_data, step=step)
