@@ -3,7 +3,6 @@ from collections import defaultdict
 import json
 import os
 import csv
-import shutil
 import torch
 import numpy as np
 from termcolor import colored
@@ -170,12 +169,7 @@ class Logger(object):
         self._use_wandb = use_wandb
         if save_tb:
             tb_dir = os.path.join(log_dir, 'tb')
-            if os.path.exists(tb_dir):
-                try:
-                    shutil.rmtree(tb_dir)
-                except:
-                    print("logger.py warning: Unable to remove tb directory")
-                    pass
+            os.makedirs(tb_dir, exist_ok=True)
             self._sw = SummaryWriter(tb_dir)
         else:
             self._sw = None
@@ -191,19 +185,32 @@ class Logger(object):
         log_frequency = log_frequency or self._log_frequency
         return step % log_frequency == 0
 
+    def _disable_sw(self, err):
+        print(f"logger.py warning: disabling TensorBoard logging: {err}")
+        self._sw = None
+
     def _try_sw_log(self, key, value, step):
         if self._sw is not None:
-            self._sw.add_scalar(key, value, step)
+            try:
+                self._sw.add_scalar(key, value, step)
+            except OSError as err:
+                self._disable_sw(err)
 
     def _try_sw_log_video(self, key, frames, step):
         if self._sw is not None:
-            frames = torch.from_numpy(np.array(frames))
-            frames = frames.unsqueeze(0)
-            self._sw.add_video(key, frames, step, fps=30)
+            try:
+                frames = torch.from_numpy(np.array(frames))
+                frames = frames.unsqueeze(0)
+                self._sw.add_video(key, frames, step, fps=30)
+            except OSError as err:
+                self._disable_sw(err)
 
     def _try_sw_log_histogram(self, key, histogram, step):
         if self._sw is not None:
-            self._sw.add_histogram(key, histogram, step)
+            try:
+                self._sw.add_histogram(key, histogram, step)
+            except OSError as err:
+                self._disable_sw(err)
 
     def log(self, key, value, step, n=1, log_frequency=1):
         if not self._should_log(step, log_frequency):

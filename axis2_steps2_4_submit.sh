@@ -121,7 +121,7 @@ else
     PYTHON="${PYTHON:-$HOME/miniconda3/envs/bpref/bin/python}"
 fi
 
-if [ -d "$(dirname "$DEFAULT_CHPC_RESULTS_DIR")" ]; then
+if [ -d "$DEFAULT_CHPC_SCRIPT_DIR" ]; then
     RESULTS_DIR="${RESULTS_DIR:-$DEFAULT_CHPC_RESULTS_DIR}"
     LOG_DIR="${LOG_DIR:-$DEFAULT_CHPC_LOG_DIR}"
 else
@@ -240,6 +240,7 @@ def add_cell(env_name, hp, kind, condition, seed, config_name, dir_name, overrid
         f"env={env_name}",
         f"seed={seed}",
         f"use_wandb={use_wandb}",
+        "log_save_tb=false",
         "gpu=0",
         f"hydra.run.dir={run_dir}",
     ]
@@ -565,7 +566,7 @@ EOT
 
 cat > "$TMP_ANALYSIS_SCRIPT" <<'EOT'
 #!/bin/bash
-#SBATCH --mem=12g
+#SBATCH --mem=20g
 #SBATCH --cpus-per-task=__ANALYSIS_CPUS_PER_TASK__
 #SBATCH --ntasks=1
 #SBATCH --job-name=__ANALYSIS_JOB_NAME__
