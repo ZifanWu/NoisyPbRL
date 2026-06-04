@@ -2,32 +2,35 @@
 # ==============================================================
 # Axis 2 Tier B SLURM submission: README steps 2-4
 #
-# Step 2: full Axis 2 training matrix on Metaworld door-open
-#   - base conditions: control, shift, epi, mis, seeds 1..6
-#   - mis RM-capacity sweep: rm_hidden_dim in {8,16,32,64}, seeds 1..3
-#     h=16 seed 1..3 duplicate the base mis runs and are skipped
-#   - confirmatory mis runs: linear-head and mistake-teacher, seed 1
+# Matrix source: configs/axis2_tier_b/matrix.yaml
+# Runtime defaults: config/train_PEBBLE_axis2*.yaml
 #
+# Step 2: training array generated from the YAML matrix
 # Step 3: axis2_tier_b.analysis after training array
 # Step 4: axis2_tier_b.payoff after training array, plus aggregate plot
 #
 # Usage:
 #   bash axis2_steps2_4_submit.sh
 #
-# Useful overrides:
+# Useful overrides / filters:
 #   DRY_RUN=true bash axis2_steps2_4_submit.sh
 #   MAX_CONCURRENT=8 bash axis2_steps2_4_submit.sh
 #   TIME_LIMIT=36:00:00 bash axis2_steps2_4_submit.sh
-#   AXIS2_ENV=metaworld_button-press-v2 bash axis2_steps2_4_submit.sh
-#   RUN_ANALYSIS=false bash axis2_steps2_4_submit.sh
-#   RUN_PAYOFF=false bash axis2_steps2_4_submit.sh
+#   ENVS='metaworld_door-open-v2 metaworld_button-press-v2' bash axis2_steps2_4_submit.sh
+#   SEEDS='1 2 3' bash axis2_steps2_4_submit.sh
+#   CONDITIONS='control shift' bash axis2_steps2_4_submit.sh
+#   HYPERPARAM_SETS='default short_debug' bash axis2_steps2_4_submit.sh
+#   SWEEP_GROUPS='shift_num_interact buffer_window_rounds' bash axis2_steps2_4_submit.sh
+#   SWEEP_GROUPS=all bash axis2_steps2_4_submit.sh
+#   INCLUDE_MIS_SWEEP=false INCLUDE_CONFIRMATORY=false bash axis2_steps2_4_submit.sh
+#   RUN_ANALYSIS=false RUN_PAYOFF=false bash axis2_steps2_4_submit.sh
 #   PAYOFF_SCOPE=base bash axis2_steps2_4_submit.sh
 #   PAYOFF_SCOPE=all PAYOFF_MAX_CONCURRENT=4 bash axis2_steps2_4_submit.sh
 #   EXTRA_OVERRIDES='num_train_steps=200000 monitor_frequency=20000' bash axis2_steps2_4_submit.sh
 #
 # Payoff scopes:
 #   readme : only README Step 4 example, shift/seed1 checkpoint (default)
-#   base   : base control/shift/epi/mis checkpoints for seeds 1..6
+#   base   : base condition checkpoints
 #   all    : every generated training checkpoint
 #   none   : skip payoff submission
 # ==============================================================
@@ -44,7 +47,7 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 ANALYSIS_CPUS_PER_TASK="${ANALYSIS_CPUS_PER_TASK:-2}"
 PAYOFF_CPUS_PER_TASK="${PAYOFF_CPUS_PER_TASK:-4}"
 PARTITION="${PARTITION:-dbrown-gpu-np}"
-USE_WANDB="${USE_WANDB:-true}"
+USE_WANDB="${USE_WANDB:-}"
 SKIP_DONE="${SKIP_DONE:-true}"
 SKIP_PAYOFF_DONE="${SKIP_PAYOFF_DONE:-true}"
 DONE_STEP="${DONE_STEP:-990000}"
@@ -55,12 +58,15 @@ RUN_ANALYSIS="${RUN_ANALYSIS:-true}"
 RUN_PAYOFF="${RUN_PAYOFF:-true}"
 PAYOFF_SCOPE="${PAYOFF_SCOPE:-readme}"
 DEPENDENCY_TYPE="${DEPENDENCY_TYPE:-afterany}"
-AXIS2_ENV="${AXIS2_ENV:-metaworld_door-open-v2}"
-SEEDS="${SEEDS:-1 2 3 4 5 6}"
-MIS_SWEEP_SEEDS="${MIS_SWEEP_SEEDS:-1 2 3}"
-MIS_WIDTHS="${MIS_WIDTHS:-8 16 32 64}"
-CONFIRM_SEED="${CONFIRM_SEED:-1}"
-INCLUDE_CONFIRMATORY="${INCLUDE_CONFIRMATORY:-true}"
+ENVS="${ENVS:-${AXIS2_ENV:-}}"
+SEEDS="${SEEDS:-}"
+CONDITIONS="${CONDITIONS:-}"
+HYPERPARAM_SETS="${HYPERPARAM_SETS:-}"
+SWEEP_GROUPS="${SWEEP_GROUPS:-}"
+MIS_SWEEP_SEEDS="${MIS_SWEEP_SEEDS:-}"
+MIS_WIDTHS="${MIS_WIDTHS:-}"
+INCLUDE_MIS_SWEEP="${INCLUDE_MIS_SWEEP:-}"
+INCLUDE_CONFIRMATORY="${INCLUDE_CONFIRMATORY:-}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 ANALYSIS_N_BOOT="${ANALYSIS_N_BOOT:-1000}"
 PAYOFF_K_STEPS="${PAYOFF_K_STEPS:-20000}"
@@ -107,6 +113,7 @@ if [ -d "$DEFAULT_CHPC_SCRIPT_DIR" ]; then
 else
     SCRIPT_DIR="${SCRIPT_DIR:-$THIS_DIR}"
 fi
+MATRIX_PATH="${MATRIX_PATH:-$SCRIPT_DIR/configs/axis2_tier_b/matrix.yaml}"
 
 if [ -x "$DEFAULT_CHPC_PYTHON" ]; then
     PYTHON="${PYTHON:-$DEFAULT_CHPC_PYTHON}"
@@ -122,6 +129,11 @@ else
     LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/logs/axis2_tier_b}"
 fi
 
+if [ ! -f "$MATRIX_PATH" ]; then
+    echo "ERROR: matrix file not found: $MATRIX_PATH"
+    exit 1
+fi
+
 MANIFEST_DIR="$RESULTS_DIR/manifests"
 ANALYSIS_OUT_DIR="${ANALYSIS_OUT_DIR:-$RESULTS_DIR/results}"
 PAYOFF_OUT_DIR="${PAYOFF_OUT_DIR:-$RESULTS_DIR/payoff}"
@@ -133,9 +145,9 @@ PAYOFF_MANIFEST_JSON="$MANIFEST_DIR/axis2_step4_payoff_${PAYOFF_SCOPE}.json"
 PAYOFF_MANIFEST_CSV="$MANIFEST_DIR/axis2_step4_payoff_${PAYOFF_SCOPE}.csv"
 
 read -r N_TRAIN N_PAYOFF < <("$PYTHON" - \
-    "$AXIS2_ENV" "$SEEDS" "$MIS_SWEEP_SEEDS" "$MIS_WIDTHS" "$CONFIRM_SEED" \
-    "$INCLUDE_CONFIRMATORY" "$RESULTS_DIR" "$PAYOFF_OUT_DIR" "$USE_WANDB" \
-    "$EXTRA_OVERRIDES" "$CKPT_STEP" "$PAYOFF_SCOPE" \
+    "$MATRIX_PATH" "$RESULTS_DIR" "$PAYOFF_OUT_DIR" "$USE_WANDB" "$EXTRA_OVERRIDES" \
+    "$CKPT_STEP" "$PAYOFF_SCOPE" "$ENVS" "$SEEDS" "$CONDITIONS" "$HYPERPARAM_SETS" \
+    "$SWEEP_GROUPS" "$MIS_SWEEP_SEEDS" "$MIS_WIDTHS" "$INCLUDE_MIS_SWEEP" "$INCLUDE_CONFIRMATORY" \
     "$TRAIN_MANIFEST_JSON" "$TRAIN_MANIFEST_CSV" "$PAYOFF_MANIFEST_JSON" "$PAYOFF_MANIFEST_CSV" <<'PY'
 import csv
 import json
@@ -143,51 +155,103 @@ import shlex
 import sys
 from pathlib import Path
 
-axis2_env = sys.argv[1]
-seeds = [int(x) for x in shlex.split(sys.argv[2])]
-mis_sweep_seeds = [int(x) for x in shlex.split(sys.argv[3])]
-mis_widths = [int(x) for x in shlex.split(sys.argv[4])]
-confirm_seed = int(sys.argv[5])
-include_confirmatory = sys.argv[6].lower() == "true"
-results_dir = Path(sys.argv[7])
-payoff_out_dir = Path(sys.argv[8])
-use_wandb = sys.argv[9]
-extra_overrides = shlex.split(sys.argv[10]) if sys.argv[10] else []
-ckpt_step = int(sys.argv[11])
-payoff_scope = sys.argv[12]
-train_manifest_json = Path(sys.argv[13])
-train_manifest_csv = Path(sys.argv[14])
-payoff_manifest_json = Path(sys.argv[15])
-payoff_manifest_csv = Path(sys.argv[16])
+import yaml
+
+matrix_path = Path(sys.argv[1])
+results_dir = Path(sys.argv[2])
+payoff_out_dir = Path(sys.argv[3])
+use_wandb_override = sys.argv[4]
+extra_overrides = shlex.split(sys.argv[5]) if sys.argv[5] else []
+ckpt_step = int(sys.argv[6])
+payoff_scope = sys.argv[7]
+envs_filter = shlex.split(sys.argv[8]) if sys.argv[8] else None
+seeds_filter = [int(x) for x in shlex.split(sys.argv[9])] if sys.argv[9] else None
+conditions_filter = set(shlex.split(sys.argv[10])) if sys.argv[10] else None
+hp_filter = set(shlex.split(sys.argv[11])) if sys.argv[11] else None
+sweep_group_tokens = shlex.split(sys.argv[12]) if sys.argv[12] else []
+sweep_group_filter = set(sweep_group_tokens) if sweep_group_tokens else None
+mis_sweep_seeds_override = [int(x) for x in shlex.split(sys.argv[13])] if sys.argv[13] else None
+mis_widths_override = [int(x) for x in shlex.split(sys.argv[14])] if sys.argv[14] else None
+include_mis_sweep_override = sys.argv[15]
+include_confirmatory_override = sys.argv[16]
+train_manifest_json = Path(sys.argv[17])
+train_manifest_csv = Path(sys.argv[18])
+payoff_manifest_json = Path(sys.argv[19])
+payoff_manifest_csv = Path(sys.argv[20])
+
+matrix = yaml.safe_load(open(matrix_path, "r", encoding="utf-8")) or {}
+
+def as_bool(value, default=False):
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"1", "true", "yes", "y", "on"}
 
 def qjoin(parts):
     return " ".join(shlex.quote(str(x)) for x in parts)
 
+def list_from_matrix(key, default):
+    value = matrix.get(key, default)
+    return list(value) if value is not None else []
+
+envs = envs_filter or [str(x) for x in list_from_matrix("envs", ["metaworld_door-open-v2"])]
+seeds = seeds_filter or [int(x) for x in list_from_matrix("seeds", [1, 2, 3, 4, 5, 6])]
+defaults = matrix.get("defaults", {}) or {}
+use_wandb = use_wandb_override if use_wandb_override else str(defaults.get("use_wandb", True)).lower()
+
+hp_sets = matrix.get("hyperparameter_sets", [{"name": "default", "overrides": []}]) or []
+if hp_filter is not None:
+    hp_sets = [hp for hp in hp_sets if hp.get("name", "default") in hp_filter]
+if not hp_sets:
+    raise SystemExit("No hyperparameter_sets selected")
+
+conditions = []
+for cond in matrix.get("conditions", []):
+    name = cond.get("name")
+    if not as_bool(cond.get("enabled", True), True):
+        continue
+    if conditions_filter is not None and name not in conditions_filter and cond.get("kind") not in conditions_filter:
+        continue
+    conditions.append(cond)
+if not conditions and conditions_filter is not None:
+    raise SystemExit("No conditions selected")
+
 cells = []
 seen_run_dirs = set()
 
-def add_cell(kind, condition, seed, config_name, run_dir, overrides, base=False):
-    run_dir = Path(run_dir)
+def hp_prefix(hp):
+    name = hp.get("name", "default")
+    return [] if name == "default" else [name]
+
+def hp_run_suffix(hp):
+    name = hp.get("name", "default")
+    return "" if name == "default" else f"__{name}"
+
+def add_cell(env_name, hp, kind, condition, seed, config_name, dir_name, overrides, base=False):
+    run_dir = results_dir / env_name / Path(*hp_prefix(hp)) / dir_name / f"seed{seed}"
     key = str(run_dir)
     if key in seen_run_dirs:
         return
     seen_run_dirs.add(key)
-    run_name = f"{axis2_env}__{kind}__seed{seed}"
+    run_name = f"{env_name}__{kind}{hp_run_suffix(hp)}__seed{seed}"
     cli = [
         "__PYTHON_BIN__", "train_PEBBLE_axis2.py",
-        f"env={axis2_env}",
+        f"env={env_name}",
         f"seed={seed}",
         f"use_wandb={use_wandb}",
         "gpu=0",
         f"hydra.run.dir={run_dir}",
     ]
     cli.extend(overrides)
+    cli.extend(hp.get("overrides", []) or [])
     cli.extend(extra_overrides)
     cli.extend(["--config-name", config_name])
     cells.append({
+        "env": env_name,
+        "hyperparameter_set": hp.get("name", "default"),
         "kind": kind,
         "condition": condition,
-        "env": axis2_env,
         "seed": seed,
         "config_name": config_name,
         "run_name": run_name,
@@ -197,35 +261,149 @@ def add_cell(kind, condition, seed, config_name, run_dir, overrides, base=False)
         "base": base,
     })
 
-for seed in seeds:
-    add_cell("control", "control", seed, "train_PEBBLE_axis2",
-             results_dir / axis2_env / "control" / f"seed{seed}", [], base=True)
-    add_cell("shift", "shift", seed, "train_PEBBLE_axis2_shift",
-             results_dir / axis2_env / "shift" / f"seed{seed}", [], base=True)
-    add_cell("epi", "epi", seed, "train_PEBBLE_axis2_epi",
-             results_dir / axis2_env / "epi" / f"seed{seed}", [], base=True)
-    add_cell("mis_h16_l1", "mis", seed, "train_PEBBLE_axis2_mis",
-             results_dir / axis2_env / "mis_h16_l1" / f"seed{seed}", [], base=True)
+for env_name in envs:
+    for hp in hp_sets:
+        for seed in seeds:
+            for cond in conditions:
+                add_cell(
+                    env_name=env_name,
+                    hp=hp,
+                    kind=cond.get("kind", cond["name"]),
+                    condition=cond.get("name", cond.get("kind", "unknown")),
+                    seed=seed,
+                    config_name=cond["config_name"],
+                    dir_name=cond.get("dir_name", cond.get("kind", cond["name"])),
+                    overrides=list(cond.get("overrides", []) or []),
+                    base=True,
+                )
 
-for width in mis_widths:
-    for seed in mis_sweep_seeds:
-        add_cell(f"mis_h{width}_l1", "mis", seed, "train_PEBBLE_axis2_mis",
-                 results_dir / axis2_env / f"mis_h{width}_l1" / f"seed{seed}",
-                 [f"rm_hidden_dim={width}"], base=False)
+mis_sweep = matrix.get("mis_capacity_sweep", {}) or {}
+include_mis_sweep = as_bool(include_mis_sweep_override, as_bool(mis_sweep.get("enabled", True), True))
+if include_mis_sweep:
+    sweep_seeds = mis_sweep_seeds_override or [int(x) for x in mis_sweep.get("seeds", seeds)]
+    widths = mis_widths_override or [int(x) for x in mis_sweep.get("widths", [8, 16, 32, 64])]
+    config_name = mis_sweep.get("config_name", "train_PEBBLE_axis2_mis")
+    rm_num_layers = int(mis_sweep.get("rm_num_layers", 1))
+    skip_dupes = as_bool(mis_sweep.get("skip_base_width_duplicates", True), True)
+    base_mis_dirs = {c["run_dir"] for c in cells if c["kind"] == f"mis_h16_l{rm_num_layers}"}
+    for env_name in envs:
+        for hp in hp_sets:
+            for width in widths:
+                for seed in sweep_seeds:
+                    dir_name = f"mis_h{width}_l{rm_num_layers}"
+                    candidate = results_dir / env_name / Path(*hp_prefix(hp)) / dir_name / f"seed{seed}"
+                    if skip_dupes and str(candidate) in base_mis_dirs:
+                        continue
+                    add_cell(
+                        env_name=env_name,
+                        hp=hp,
+                        kind=dir_name,
+                        condition="mis",
+                        seed=seed,
+                        config_name=config_name,
+                        dir_name=dir_name,
+                        overrides=[f"rm_hidden_dim={width}"],
+                        base=False,
+                    )
 
+confirm = matrix.get("confirmatory", {}) or {}
+include_confirmatory = as_bool(include_confirmatory_override, as_bool(confirm.get("enabled", True), True))
 if include_confirmatory:
-    add_cell("mis_linear", "mis", confirm_seed, "train_PEBBLE_axis2_mis",
-             results_dir / axis2_env / "mis_linear" / f"seed{confirm_seed}",
-             ["rm_num_layers=0", "rm_output_activation=none"], base=False)
-    add_cell("mis_mistake", "mis", confirm_seed, "train_PEBBLE_axis2_mis",
-             results_dir / axis2_env / "mis_mistake" / f"seed{confirm_seed}",
-             ["teacher_beta=-1", "teacher_eps_mistake=0.1", "bt_normalize_by_gap_std=false"],
-             base=False)
+    confirm_seed = int(confirm.get("seed", seeds[0]))
+    for env_name in envs:
+        for hp in hp_sets:
+            for run in confirm.get("runs", []):
+                add_cell(
+                    env_name=env_name,
+                    hp=hp,
+                    kind=run["name"],
+                    condition="mis",
+                    seed=confirm_seed,
+                    config_name=run.get("config_name", "train_PEBBLE_axis2_mis"),
+                    dir_name=run.get("dir_name", run["name"]),
+                    overrides=list(run.get("overrides", []) or []),
+                    base=False,
+                )
+
+condition_by_name = {c.get("name"): c for c in matrix.get("conditions", [])}
+condition_by_kind = {c.get("kind", c.get("name")): c for c in matrix.get("conditions", [])}
+
+def resolve_sweep_conditions(sweep):
+    requested = list(sweep.get("conditions", []) or [])
+    if not requested:
+        requested = [c.get("name") for c in conditions]
+    resolved = []
+    for item in requested:
+        cond = condition_by_name.get(item) or condition_by_kind.get(item)
+        if cond is None:
+            raise SystemExit(f"Unknown sensitivity_sweeps condition {item!r}")
+        name = cond.get("name")
+        kind = cond.get("kind", name)
+        if conditions_filter is not None and name not in conditions_filter and kind not in conditions_filter:
+            continue
+        resolved.append(cond)
+    return resolved
+
+def resolve_sweep_envs(sweep):
+    selected = [str(x) for x in sweep.get("envs", envs)]
+    if envs_filter is not None:
+        selected = [x for x in selected if x in envs_filter]
+    return selected
+
+def resolve_sweep_seeds(sweep):
+    selected = [int(x) for x in sweep.get("seeds", seeds)]
+    if seeds_filter is not None:
+        selected = [x for x in selected if x in seeds_filter]
+    return selected
+
+def selected_sensitivity_sweeps():
+    sweeps = list(matrix.get("sensitivity_sweeps", []) or [])
+    if sweep_group_filter is None:
+        return [s for s in sweeps if as_bool(s.get("enabled", False), False)]
+    if "all" in sweep_group_filter:
+        return sweeps
+    selected = [s for s in sweeps if s.get("name") in sweep_group_filter]
+    found = {s.get("name") for s in selected}
+    missing = sweep_group_filter - found
+    if missing:
+        raise SystemExit(f"Unknown SWEEP_GROUPS entries: {sorted(missing)}")
+    return selected
+
+for sweep in selected_sensitivity_sweeps():
+    sweep_name = sweep["name"]
+    sweep_conditions = resolve_sweep_conditions(sweep)
+    sweep_envs = resolve_sweep_envs(sweep)
+    sweep_seeds = resolve_sweep_seeds(sweep)
+    common_overrides = list(sweep.get("overrides", []) or [])
+    for env_name in sweep_envs:
+        for hp in hp_sets:
+            for seed in sweep_seeds:
+                for cond in sweep_conditions:
+                    cond_name = cond.get("name")
+                    cond_kind = cond.get("kind", cond_name)
+                    cond_dir = cond.get("dir_name", cond_kind)
+                    for value in sweep.get("values", []) or []:
+                        label = value["label"]
+                        dir_name = f"{cond_dir}/{sweep_name}_{label}"
+                        kind = f"{cond_kind}__{sweep_name}_{label}"
+                        add_cell(
+                            env_name=env_name,
+                            hp=hp,
+                            kind=kind,
+                            condition=cond_name,
+                            seed=seed,
+                            config_name=value.get("config_name", cond["config_name"]),
+                            dir_name=dir_name,
+                            overrides=(list(cond.get("overrides", []) or []) +
+                                       common_overrides +
+                                       list(value.get("overrides", []) or [])),
+                            base=False,
+                        )
 
 train_manifest_json.parent.mkdir(parents=True, exist_ok=True)
 json.dump(cells, open(train_manifest_json, "w", encoding="utf-8"), indent=2)
 with open(train_manifest_csv, "w", newline="", encoding="utf-8") as f:
-    fieldnames = list(cells[0].keys()) if cells else ["kind", "condition", "env", "seed", "config_name", "run_name", "run_dir", "ckpt_dir", "command", "base"]
+    fieldnames = list(cells[0].keys()) if cells else ["env", "hyperparameter_set", "kind", "condition", "seed", "config_name", "run_name", "run_dir", "ckpt_dir", "command", "base"]
     writer = csv.DictWriter(f, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(cells)
@@ -233,7 +411,14 @@ with open(train_manifest_csv, "w", newline="", encoding="utf-8") as f:
 if payoff_scope == "none":
     payoff_cells = []
 elif payoff_scope == "readme":
-    payoff_cells = [c for c in cells if c["kind"] == "shift" and c["seed"] == 1]
+    payoff_cfg = matrix.get("payoff", {}) or {}
+    readme_kind = payoff_cfg.get("readme_kind", "shift")
+    readme_seed = int(payoff_cfg.get("readme_seed", seeds[0]))
+    payoff_cells = [
+        c for c in cells
+        if c["kind"] == readme_kind and c["seed"] == readme_seed
+        and c["hyperparameter_set"] == "default"
+    ]
 elif payoff_scope == "base":
     payoff_cells = [c for c in cells if c["base"]]
 elif payoff_scope == "all":
@@ -246,9 +431,10 @@ for c in payoff_cells:
     out_dir = payoff_out_dir / "runs" / c["run_name"]
     payoff_rows.append({
         "run_name": c["run_name"],
+        "env": c["env"],
+        "hyperparameter_set": c["hyperparameter_set"],
         "kind": c["kind"],
         "condition": c["condition"],
-        "env": c["env"],
         "seed": c["seed"],
         "ckpt_dir": c["ckpt_dir"],
         "out_dir": str(out_dir),
@@ -256,7 +442,7 @@ for c in payoff_cells:
 
 json.dump(payoff_rows, open(payoff_manifest_json, "w", encoding="utf-8"), indent=2)
 with open(payoff_manifest_csv, "w", newline="", encoding="utf-8") as f:
-    fieldnames = list(payoff_rows[0].keys()) if payoff_rows else ["run_name", "kind", "condition", "env", "seed", "ckpt_dir", "out_dir"]
+    fieldnames = list(payoff_rows[0].keys()) if payoff_rows else ["run_name", "env", "hyperparameter_set", "kind", "condition", "seed", "ckpt_dir", "out_dir"]
     writer = csv.DictWriter(f, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(payoff_rows)
@@ -530,7 +716,12 @@ for script in "$TMP_TRAIN_SCRIPT" "$TMP_ANALYSIS_SCRIPT" "$TMP_PAYOFF_SCRIPT" "$
 done
 
 echo "=== Axis 2 steps 2-4 SLURM submission ==="
-echo "  env              : $AXIS2_ENV"
+echo "  matrix           : $MATRIX_PATH"
+echo "  env filter       : ${ENVS:-<matrix>}"
+echo "  seed filter      : ${SEEDS:-<matrix>}"
+echo "  condition filter : ${CONDITIONS:-<matrix>}"
+echo "  hparam filter    : ${HYPERPARAM_SETS:-<matrix>}"
+echo "  sweep groups     : ${SWEEP_GROUPS:-<enabled-in-matrix>}"
 echo "  train cells      : $N_TRAIN"
 echo "  train array spec : $TRAIN_ARRAY_SPEC"
 echo "  payoff scope     : $PAYOFF_SCOPE"
@@ -592,5 +783,5 @@ if [ "$RUN_PAYOFF" = "true" ] && [ "$PAYOFF_SCOPE" != "none" ] && [ "$N_PAYOFF" 
     echo "Payoff aggregate plots will be written to: ${PAYOFF_OUT_DIR}/aggregate"
 else
     echo "Payoff submission disabled. Run a single checkpoint manually, e.g.:"
-    echo "  $PYTHON -m axis2_tier_b.payoff --ckpt_dir $RESULTS_DIR/$AXIS2_ENV/shift/seed1/ckpt_$CKPT_STEP --out_dir $PAYOFF_OUT_DIR/runs/${AXIS2_ENV}__shift__seed1"
+    echo "  $PYTHON -m axis2_tier_b.payoff --ckpt_dir $RESULTS_DIR/metaworld_door-open-v2/shift/seed1/ckpt_$CKPT_STEP --out_dir $PAYOFF_OUT_DIR/runs/metaworld_door-open-v2__shift__seed1"
 fi

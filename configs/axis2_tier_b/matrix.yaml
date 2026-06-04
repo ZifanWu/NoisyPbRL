@@ -1,0 +1,153 @@
+# Axis 2 Tier B sweep matrix for axis2_steps2_4_submit.sh
+#
+# One generated SLURM array task corresponds to one train_PEBBLE_axis2.py run.
+# The submitter writes manifests under RESULTS_DIR/manifests before submitting.
+
+envs:
+  - metaworld_door-open-v2
+
+seeds:
+  - 12345
+  - 23456
+  - 34567
+  - 45678
+  - 56789
+  - 67890
+
+# Base Step-2 conditions. Set enabled: false or filter with CONDITIONS at submit time.
+conditions:
+  - name: control
+    kind: control
+    config_name: train_PEBBLE_axis2
+    dir_name: control
+    enabled: true
+
+  - name: shift
+    kind: shift
+    config_name: train_PEBBLE_axis2_shift
+    dir_name: shift
+    enabled: true
+
+  - name: epi
+    kind: epi
+    config_name: train_PEBBLE_axis2_epi
+    dir_name: epi
+    enabled: true
+
+  - name: mis
+    kind: mis_h16_l1
+    config_name: train_PEBBLE_axis2_mis
+    dir_name: mis_h16_l1
+    enabled: true
+
+# Optional global hyperparameter sets. These cross every generated cell, so keep
+# this small. Prefer sensitivity_sweeps below for targeted one-axis probes.
+hyperparameter_sets:
+  - name: default
+    overrides: []
+
+# Primary misspecification capacity sweep. This is part of the default matrix
+# because rm_hidden_dim is the main controllable model-class gap knob.
+mis_capacity_sweep:
+  enabled: true
+  seeds: [12345, 23456, 34567]
+  widths: [8, 16, 32, 64, 128]
+  config_name: train_PEBBLE_axis2_mis
+  rm_num_layers: 1
+  skip_base_width_duplicates: true
+
+confirmatory:
+  enabled: true
+  seed: 12345
+  runs:
+    - name: mis_linear
+      config_name: train_PEBBLE_axis2_mis
+      dir_name: mis_linear
+      overrides:
+        - rm_num_layers=0
+        - rm_output_activation=none
+
+    - name: mis_mistake
+      config_name: train_PEBBLE_axis2_mis
+      dir_name: mis_mistake
+      overrides:
+        - teacher_beta=-1
+        - teacher_eps_mistake=0.1
+        - bt_normalize_by_gap_std=false
+
+# Targeted sweeps are off by default to avoid multiplying the whole primary
+# matrix. Select them with SWEEP_GROUPS, for example:
+#   SWEEP_GROUPS=shift_num_interact buffer_window_rounds
+#   SWEEP_GROUPS=all
+sensitivity_sweeps:
+  # Highest-value shift sensitivity: graded policy/RM support drift.
+  # Base shift already covers num_interact=100000.
+  - name: shift_num_interact
+    enabled: false
+    conditions: [shift]
+    seeds: [12345, 23456, 34567]
+    values:
+      - label: interact_10000
+        overrides: [num_interact=10000]
+      - label: interact_30000
+        overrides: [num_interact=30000]
+      - label: interact_200000
+        overrides: [num_interact=200000]
+
+  # Important design-sensitivity check: confirms e_shift is not an artifact of
+  # stale-pair mixture fitting. Base configs use buffer_window_rounds=3.
+  - name: buffer_window_rounds
+    enabled: false
+    conditions: [control, shift]
+    seeds: [12345, 23456, 34567]
+    values:
+      - label: window_1
+        overrides: [buffer_window_rounds=1]
+      - label: window_5
+        overrides: [buffer_window_rounds=5]
+      - label: window_all
+        overrides: [buffer_window_rounds=0]
+
+  # Label-budget sweep for epistemic uncertainty. Base epi uses max_feedback=200.
+  - name: epi_feedback_budget
+    enabled: false
+    conditions: [epi]
+    seeds: [12345, 23456, 34567]
+    values:
+      - label: feedback_100
+        overrides: [max_feedback=100]
+      - label: feedback_500
+        overrides: [max_feedback=500]
+      - label: feedback_1000
+        overrides: [max_feedback=1000]
+      - label: feedback_2000
+        overrides: [max_feedback=2000]
+
+  # Preference-informativeness sweep for epistemic uncertainty. Base epi uses
+  # teacher_beta=1 with bt_normalize_by_gap_std=true.
+  - name: epi_teacher_beta
+    enabled: false
+    conditions: [epi]
+    seeds: [12345, 23456, 34567]
+    values:
+      - label: beta_0p5
+        overrides: [teacher_beta=0.5]
+      - label: beta_2
+        overrides: [teacher_beta=2]
+      - label: beta_5
+        overrides: [teacher_beta=5]
+
+payoff:
+  # readme: one representative shift checkpoint, base: base condition runs,
+  # all: every generated run, none: no payoff
+  scope: readme
+  readme_kind: shift
+  readme_seed: 12345
+  k_steps: 20000
+  remedy_labels: [1000, 5000]
+
+defaults:
+  use_wandb: true
+  done_step: 990000
+  ckpt_step: 500000
+  analysis_n_boot: 1000
