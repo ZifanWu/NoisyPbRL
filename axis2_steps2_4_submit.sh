@@ -616,10 +616,30 @@ set -euo pipefail
 cd "__SCRIPT_DIR__"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-__ANALYSIS_CPUS_PER_TASK__}"
 
+echo "=== Axis 2 combined analysis ==="
 "__PYTHON__" -m axis2_tier_b.analysis \
     --results_dir "__RESULTS_DIR__" \
     --out_dir "__ANALYSIS_OUT_DIR__" \
     --n_boot "__ANALYSIS_N_BOOT__"
+
+mapfile -t ENV_RESULT_DIRS < <("__PYTHON__" - "__RESULTS_DIR__" <<'PY'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for path in sorted(root.iterdir() if root.exists() else []):
+    if path.is_dir() and any(path.rglob('axis2_metrics.csv')):
+        print(path)
+PY
+)
+
+for ENV_RESULTS_DIR in "${ENV_RESULT_DIRS[@]}"; do
+    ENV_NAME="$(basename "${ENV_RESULTS_DIR}")"
+    echo "=== Axis 2 per-env analysis: ${ENV_NAME} ==="
+    "__PYTHON__" -m axis2_tier_b.analysis \
+        --results_dir "${ENV_RESULTS_DIR}" \
+        --out_dir "${ENV_RESULTS_DIR}/results" \
+        --n_boot "__ANALYSIS_N_BOOT__"
+done
 EOT
 
 cat > "$TMP_PAYOFF_SCRIPT" <<'EOT'
@@ -805,10 +825,13 @@ fi
 if [ "$RUN_ANALYSIS" = "true" ]; then
     ANALYSIS_JOB_ID="$(sbatch --parsable "${analysis_dependency_args[@]}" "$TMP_ANALYSIS_SCRIPT")"
     echo "Submitted Step 3 analysis job: $ANALYSIS_JOB_ID"
-    echo "Analysis report will be written to: ${ANALYSIS_OUT_DIR}/results.md"
+    echo "Combined analysis report will be written to: ${ANALYSIS_OUT_DIR}/results.md"
+    echo "Per-env reports will be written to: ${RESULTS_DIR}/<env>/results/results.md"
 else
-    echo "Analysis submission disabled. Run manually:"
+    echo "Analysis submission disabled. Run combined manually:"
     echo "  $PYTHON -m axis2_tier_b.analysis --results_dir $RESULTS_DIR --out_dir $ANALYSIS_OUT_DIR --n_boot $ANALYSIS_N_BOOT"
+    echo "Run per-env manually, e.g.:"
+    echo "  $PYTHON -m axis2_tier_b.analysis --results_dir $RESULTS_DIR/metaworld_drawer-open-v2 --out_dir $RESULTS_DIR/metaworld_drawer-open-v2/results --n_boot $ANALYSIS_N_BOOT"
 fi
 
 if [ "$RUN_PAYOFF" = "true" ] && [ "$PAYOFF_SCOPE" != "none" ] && [ "$N_PAYOFF" -gt 0 ]; then

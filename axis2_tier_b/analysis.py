@@ -121,13 +121,18 @@ def load_all_metrics(results_dir: str) -> pd.DataFrame:
             f"No axis2_metrics.csv found under {results_dir}.\n"
             "Run train_PEBBLE_axis2.py first.")
 
+    root_name = os.path.basename(os.path.normpath(results_dir))
+    default_task = root_name if (
+        'walker' in root_name or 'cheetah' in root_name or root_name.startswith('metaworld_')
+    ) else 'unknown'
+
     dfs = []
     for f in files:
         df = pd.read_csv(f)
         parts = f.replace(results_dir, '').split(os.sep)
         # expected path: .../axis2_tier_b/<task>/<condition>/seed<N>/axis2_metrics.csv
         condition = 'unknown'
-        task = 'unknown'
+        task = default_task
         seed = -1
         for p in parts:
             if p in ('control', 'shift', 'epi') or p.startswith('mis'):
