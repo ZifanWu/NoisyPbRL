@@ -191,6 +191,19 @@ def as_bool(value, default=False):
 def qjoin(parts):
     return " ".join(shlex.quote(str(x)) for x in parts)
 
+def dedupe_cli_overrides(parts):
+    result = []
+    key_to_idx = {}
+    for item in parts:
+        if isinstance(item, str) and "=" in item and not item.startswith("--"):
+            key = item.split("=", 1)[0]
+            old_idx = key_to_idx.get(key)
+            if old_idx is not None:
+                result[old_idx] = None
+            key_to_idx[key] = len(result)
+        result.append(item)
+    return [item for item in result if item is not None]
+
 def list_from_matrix(key, default):
     value = matrix.get(key, default)
     return list(value) if value is not None else []
@@ -216,6 +229,26 @@ for cond in matrix.get("conditions", []):
     conditions.append(cond)
 if not conditions and conditions_filter is not None:
     raise SystemExit("No conditions selected")
+
+env_profiles = matrix.get("env_profiles", {}) or {}
+
+def env_profile(env_name):
+    return env_profiles.get(env_name, env_profiles.get("default", {})) or {}
+
+def env_condition_overrides(env_name, condition, kind):
+    profile = env_profile(env_name)
+    overrides = list(profile.get("overrides", []) or [])
+    condition_overrides = profile.get("condition_overrides", {}) or {}
+    overrides.extend(condition_overrides.get(condition, []) or [])
+    if kind != condition:
+        overrides.extend(condition_overrides.get(kind, []) or [])
+    return overrides
+
+def sweep_values_for_env(env_name, sweep):
+    profile = env_profile(env_name)
+    profile_sweeps = profile.get("sensitivity_sweeps", {}) or {}
+    profile_sweep = profile_sweeps.get(sweep["name"], {}) or {}
+    return list(profile_sweep.get("values", sweep.get("values", []) or []))
 
 cells = []
 seen_run_dirs = set()
@@ -244,9 +277,11 @@ def add_cell(env_name, hp, kind, condition, seed, config_name, dir_name, overrid
         "gpu=0",
         f"hydra.run.dir={run_dir}",
     ]
+    cli.extend(env_condition_overrides(env_name, condition, kind))
     cli.extend(overrides)
     cli.extend(hp.get("overrides", []) or [])
     cli.extend(extra_overrides)
+    cli = dedupe_cli_overrides(cli)
     cli.extend(["--config-name", config_name])
     cells.append({
         "env": env_name,
@@ -383,7 +418,7 @@ for sweep in selected_sensitivity_sweeps():
                     cond_name = cond.get("name")
                     cond_kind = cond.get("kind", cond_name)
                     cond_dir = cond.get("dir_name", cond_kind)
-                    for value in sweep.get("values", []) or []:
+                    for value in sweep_values_for_env(env_name, sweep):
                         label = value["label"]
                         dir_name = f"{cond_dir}/{sweep_name}_{label}"
                         kind = f"{cond_kind}__{sweep_name}_{label}"

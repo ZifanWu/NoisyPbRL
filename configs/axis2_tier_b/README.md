@@ -5,6 +5,7 @@
 The YAML controls:
 
 - `envs`: environments to run.
+- `env_profiles`: per-environment overrides inferred from `scripts/`, including environment-specific `max_feedback`, `reward_batch`, and feedback-budget sweep anchors.
 - `seeds`: base condition seeds.
 - `conditions`: base Step-2 conditions and their Hydra config names.
 - `hyperparameter_sets`: optional global override sets. These cross every cell, so keep them small.
@@ -36,3 +37,18 @@ DRY_RUN=true SWEEP_GROUPS=all bash axis2_steps2_4_submit.sh
 ```
 
 One Slurm array task is one `train_PEBBLE_axis2.py` run. The task exits when that run exits or when `SKIP_DONE=true` detects that the run already reached `DONE_STEP` in `axis2_metrics.csv`.
+
+
+## Per-env profiles
+
+Do not create one matrix per environment. Put shared experiment structure in this file and add environment-specific budgets under `env_profiles`.
+
+For example, `metaworld_drawer-open-v2` uses high-feedback base runs:
+
+```yaml
+control/mis/shift: max_feedback=10000
+epi:               max_feedback=1000
+epi sweep anchor:  max_feedback=10000
+```
+
+The submitter applies profile overrides before sweep-specific overrides, so a sweep value such as `max_feedback=5000` cleanly replaces the profile's epi default.

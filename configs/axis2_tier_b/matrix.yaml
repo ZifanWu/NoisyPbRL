@@ -14,6 +14,135 @@ seeds:
   - 56789
   - 67890
 
+
+# Per-environment defaults inferred from scripts/* PEBBLE runs. This avoids a
+# separate matrix per environment. The high feedback value is used for
+# control/shift/mis; epi uses roughly a 10x smaller label budget to raise
+# epistemic error while keeping the environment-specific scale.
+env_profiles:
+  metaworld_button-press-v2:
+    condition_overrides:
+      control: [max_feedback=20000, reward_batch=100, num_interact=5000]
+      shift: [max_feedback=20000, reward_batch=100, num_interact=50000]
+      epi: [max_feedback=2000, reward_batch=100, num_interact=5000]
+      mis: [max_feedback=20000, reward_batch=100, num_interact=5000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+          - {label: feedback_2000, overrides: [max_feedback=2000]}
+          - {label: feedback_5000, overrides: [max_feedback=5000]}
+          - {label: feedback_10000, overrides: [max_feedback=10000]}
+          - {label: feedback_20000, overrides: [max_feedback=20000]}
+
+  metaworld_door-open-v2:
+    condition_overrides:
+      control: [max_feedback=4000, reward_batch=50, num_interact=10000]
+      shift: [max_feedback=4000, reward_batch=50, num_interact=100000]
+      epi: [max_feedback=400, reward_batch=50, num_interact=10000]
+      mis: [max_feedback=4000, reward_batch=50, num_interact=10000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_200, overrides: [max_feedback=200]}
+          - {label: feedback_400, overrides: [max_feedback=400]}
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+          - {label: feedback_2000, overrides: [max_feedback=2000]}
+          - {label: feedback_4000, overrides: [max_feedback=4000]}
+
+  metaworld_drawer-open-v2:
+    condition_overrides:
+      control: [max_feedback=10000, reward_batch=100, num_interact=10000]
+      shift: [max_feedback=10000, reward_batch=100, num_interact=100000]
+      epi: [max_feedback=1000, reward_batch=100, num_interact=10000]
+      mis: [max_feedback=10000, reward_batch=100, num_interact=10000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_500, overrides: [max_feedback=500]}
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+          - {label: feedback_2000, overrides: [max_feedback=2000]}
+          - {label: feedback_5000, overrides: [max_feedback=5000]}
+          - {label: feedback_10000, overrides: [max_feedback=10000]}
+
+  metaworld_hammer-v2:
+    condition_overrides:
+      control: [max_feedback=20000, reward_batch=50, num_interact=5000]
+      shift: [max_feedback=20000, reward_batch=50, num_interact=50000]
+      epi: [max_feedback=2000, reward_batch=50, num_interact=5000]
+      mis: [max_feedback=20000, reward_batch=50, num_interact=5000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+          - {label: feedback_2000, overrides: [max_feedback=2000]}
+          - {label: feedback_5000, overrides: [max_feedback=5000]}
+          - {label: feedback_10000, overrides: [max_feedback=10000]}
+          - {label: feedback_20000, overrides: [max_feedback=20000]}
+
+  metaworld_sweep-into-v2:
+    condition_overrides:
+      control: [max_feedback=20000, reward_batch=100, num_interact=5000]
+      shift: [max_feedback=20000, reward_batch=100, num_interact=50000]
+      epi: [max_feedback=2000, reward_batch=100, num_interact=5000]
+      mis: [max_feedback=20000, reward_batch=100, num_interact=5000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+          - {label: feedback_2000, overrides: [max_feedback=2000]}
+          - {label: feedback_5000, overrides: [max_feedback=5000]}
+          - {label: feedback_10000, overrides: [max_feedback=10000]}
+          - {label: feedback_20000, overrides: [max_feedback=20000]}
+
+  metaworld_window-close-v2:
+    condition_overrides:
+      control: [max_feedback=1000, reward_batch=10, num_interact=10000]
+      shift: [max_feedback=1000, reward_batch=10, num_interact=100000]
+      epi: [max_feedback=100, reward_batch=10, num_interact=10000]
+      mis: [max_feedback=1000, reward_batch=10, num_interact=10000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_50, overrides: [max_feedback=50]}
+          - {label: feedback_100, overrides: [max_feedback=100]}
+          - {label: feedback_250, overrides: [max_feedback=250]}
+          - {label: feedback_500, overrides: [max_feedback=500]}
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+
+
+
+  metaworld_door-close-v2:
+    condition_overrides:
+      control: [max_feedback=1000, reward_batch=50, num_interact=10000]
+      shift: [max_feedback=1000, reward_batch=50, num_interact=100000]
+      epi: [max_feedback=100, reward_batch=50, num_interact=10000]
+      mis: [max_feedback=1000, reward_batch=50, num_interact=10000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_50, overrides: [max_feedback=50]}
+          - {label: feedback_100, overrides: [max_feedback=100]}
+          - {label: feedback_250, overrides: [max_feedback=250]}
+          - {label: feedback_500, overrides: [max_feedback=500]}
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+
+  metaworld_door-unlock-v2:
+    condition_overrides:
+      control: [max_feedback=5000, reward_batch=50, num_interact=10000]
+      shift: [max_feedback=5000, reward_batch=50, num_interact=100000]
+      epi: [max_feedback=500, reward_batch=50, num_interact=10000]
+      mis: [max_feedback=5000, reward_batch=50, num_interact=10000]
+    sensitivity_sweeps:
+      epi_feedback_budget:
+        values:
+          - {label: feedback_250, overrides: [max_feedback=250]}
+          - {label: feedback_500, overrides: [max_feedback=500]}
+          - {label: feedback_1000, overrides: [max_feedback=1000]}
+          - {label: feedback_2500, overrides: [max_feedback=2500]}
+          - {label: feedback_5000, overrides: [max_feedback=5000]}
+
+
 # Base Step-2 conditions. Set enabled: false or filter with CONDITIONS at submit time.
 conditions:
   - name: control
