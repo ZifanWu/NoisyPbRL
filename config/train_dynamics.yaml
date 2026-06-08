@@ -1,0 +1,92 @@
+# Dynamics over-optimization experiment.
+#
+# Extends Tier B's mis-condition (rm_hidden_dim=16) and adds:
+#   - Phase 1 freeze:  no RM updates in [phase1_freeze_step, phase2_resume_step)
+#   - Phase 2 resume:  normal RM updates after phase2_resume_step
+#   - FD ρ/κ monitor at each monitor_frequency step
+#
+# Expected pattern under Tier B's mis-condition:
+#   - true reward (gold) plateaus or dips in the freeze window
+#   - κ_FD rises during the freeze, returns toward baseline after resume
+
+defaults:
+    - agent: sac_metaworld
+
+experiment: PEBBLE_dynamics
+
+segment: 50
+activation: tanh
+num_seed_steps: 1000
+num_unsup_steps: 9000
+num_interact: 10000
+reward_lr: 0.0003
+reward_batch: 50
+reward_update: 10
+feed_type: 0
+reset_update: 100
+topK: 5
+ensemble_size: 5
+max_feedback: 2000
+large_batch: 10
+label_margin: 0.0
+teacher_beta: 5
+teacher_gamma: 1
+teacher_eps_mistake: 0
+teacher_eps_skip: 0
+teacher_eps_equal: 0
+bt_normalize_by_gap_std: true
+bt_gap_ema_alpha: 0.9
+
+rm_reset: false
+reward_schedule: 0
+
+num_train_steps: 750000
+replay_buffer_capacity: ${num_train_steps}
+
+eval_frequency: 10000
+num_eval_episodes: 10
+gpu: 0
+device: cuda:${gpu}
+
+dormant_log_period: 5000
+dormant_threshold: 0.1
+bt_log_period: 5000
+
+log_frequency: 10000
+log_save_tb: true
+use_wandb: false
+
+save_video: false
+seed: 1
+env: metaworld_door-open-v2
+gradient_update: 1
+
+# Mis-condition capacity (matches Tier B mis)
+rm_hidden_dim: 16
+rm_num_layers: 1
+rm_output_activation: tanh
+
+buffer_window_rounds: 3
+
+yardstick_hidden_dim: null
+yardstick_num_layers: null
+yardstick_output_activation: null
+
+monitor_frequency: 20000
+probe_seg_size: 200
+probe_size: 1024
+kappa_warmup_steps: 10
+kappa_fresh_prefs: 64
+checkpoint_step: 500000
+
+# ---- Dynamics-specific knobs ----
+phase1_freeze_step: 200000
+phase2_resume_step: 500000
+# FD monitor params
+fd_pref_batch_size: 128
+fd_refit_epochs: 10
+
+hydra:
+    name: ${env}
+    run:
+        dir: /home/zifan/NoisyPbRL/exp/axis2_dynamics_pg/dynamics/${env}/mis_h${rm_hidden_dim}_l${rm_num_layers}/seed${seed}
