@@ -96,7 +96,13 @@ class Workspace(object):
             bt_log_period=cfg.bt_log_period,
             feed_type=cfg.feed_type,
             capacity=cfg.max_feedback * cfg.large_batch)
-        
+
+        # ---- performative-gradient diagnostic hooks -----------------------
+        if os.environ.get("PD_ENABLE", "0") == "1":
+            from perf_diag.hooks import install_hooks
+            install_hooks(self)
+        # -------------------------------------------------------------------
+
     def evaluate(self):
         average_episode_reward = 0
         average_true_episode_reward = 0
