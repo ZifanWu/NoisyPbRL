@@ -39,6 +39,10 @@ DRY_RUN="${DRY_RUN:-false}"
 RUN_TRAIN="${RUN_TRAIN:-true}"
 RUN_ANALYSIS="${RUN_ANALYSIS:-true}"
 DEPENDENCY_TYPE="${DEPENDENCY_TYPE:-afterany}"
+# Default true: the combined report aggregates EVERY JSONL in PD_OUT_DIR, not just
+# the cells from this submission. Use MERGE_PREVIOUS=false for a clean
+# "only-this-submission" view.
+MERGE_PREVIOUS="${MERGE_PREVIOUS:-true}"
 
 # Per-cell training budget (matches FullConfig in perf_diag/run.py)
 NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-500000}"
@@ -408,16 +412,31 @@ export PYTHONPATH="__SCRIPT_DIR__:${PYTHONPATH:-}"
 
 # Step 0: rebuild a manifest of completed runs from the JSONL traces in PD_OUT_DIR.
 # This is the file that perf_diag.analysis reads.
-"__PYTHON__" - "__TRAIN_MANIFEST_JSON__" "__PD_OUT_DIR__" <<'PY'
-import json, os, sys
+# When MERGE_PREVIOUS=true, also scan any JSONL in PD_OUT_DIR that wasn't part of
+# this submission's train_manifest (i.e., runs left over from previous submissions).
+# Filename convention: <task>__<regime>__seed<N>.jsonl.
+"__PYTHON__" - "__TRAIN_MANIFEST_JSON__" "__PD_OUT_DIR__" "__MERGE_PREVIOUS__" <<'PY'
+import json, re, sys
 from pathlib import Path
+
 train_manifest = json.load(open(sys.argv[1], "r", encoding="utf-8"))
 out_dir = Path(sys.argv[2])
+merge_previous = sys.argv[3].lower() in {"1", "true", "yes", "y", "on"}
+
+POSITIVE_REGIMES = {"rare_relabel", "med_relabel"}
+NEGATIVE_REGIMES = {"frequent_relabel"}
+KNOWN_REGIMES = POSITIVE_REGIMES | NEGATIVE_REGIMES
+FILENAME_RE = re.compile(r"^(?P<task>.+)__(?P<regime>[^_]+(?:_[^_]+)*)__seed(?P<seed>\d+)\.jsonl$")
+
 runs = []
+seen_paths = set()
+
+# (a) Cells from this submission's train manifest first.
 for cell in train_manifest:
     jsonl = Path(cell["jsonl_path"])
-    if not jsonl.exists():
+    if not jsonl.exists() or jsonl.stat().st_size == 0:
         continue
+    seen_paths.add(jsonl.resolve())
     runs.append({
         "run_name": cell["run_name"],
         "status": "completed",
@@ -426,7 +445,42 @@ for cell in train_manifest:
         "task": cell["task"],
         "seed": cell["seed"],
         "is_positive": cell["is_positive"],
+        "source": "this_submission",
     })
+
+# (b) When merging, scan PD_OUT_DIR for previously-completed JSONLs.
+n_merged_in = 0
+n_skipped_unknown = 0
+if merge_previous and out_dir.exists():
+    for jsonl in sorted(out_dir.glob("*.jsonl")):
+        if jsonl.resolve() in seen_paths:
+            continue
+        if jsonl.stat().st_size == 0:
+            continue
+        m = FILENAME_RE.match(jsonl.name)
+        if not m:
+            # Skip files like smoke_test.jsonl that don't match the convention.
+            n_skipped_unknown += 1
+            continue
+        task = m.group("task")
+        regime = m.group("regime")
+        seed = int(m.group("seed"))
+        if regime not in KNOWN_REGIMES:
+            n_skipped_unknown += 1
+            continue
+        is_positive = regime in POSITIVE_REGIMES
+        runs.append({
+            "run_name": f"{task}__{regime}__seed{seed}",
+            "status": "completed",
+            "jsonl": str(jsonl),
+            "regime": regime,
+            "task": task,
+            "seed": seed,
+            "is_positive": is_positive,
+            "source": "previous_submission",
+        })
+        n_merged_in += 1
+
 manifest = {
     "runs": runs,
     "config": {
@@ -434,6 +488,7 @@ manifest = {
         "tasks": sorted({r["task"] for r in runs}),
         "seeds": sorted({r["seed"] for r in runs}),
         "regimes": sorted({r["regime"] for r in runs}),
+        "merge_previous": bool(merge_previous),
     },
     "neg_control_validity": {"ok": True, "bad": []},
 }
@@ -441,11 +496,28 @@ manifest_path = out_dir / "_manifest.json"
 manifest_path.parent.mkdir(parents=True, exist_ok=True)
 with open(manifest_path, "w", encoding="utf-8") as f:
     json.dump(manifest, f, indent=2)
-print(f"wrote {manifest_path} with {len(runs)} runs")
+n_this = len(runs) - n_merged_in
+print(f"wrote {manifest_path}: {len(runs)} runs total "
+      f"({n_this} from this submission, {n_merged_in} merged from previous; "
+      f"{n_skipped_unknown} unrelated JSONLs skipped)")
 PY
 
-echo "=== perf_diag analysis ==="
+echo "=== perf_diag analysis: combined report ==="
 "__PYTHON__" -m perf_diag.analysis
+
+# Per-env reports: one results.md / Figs / Tables per task (mirrors axis2's pattern).
+mapfile -t TASKS < <("__PYTHON__" - "__PD_OUT_DIR__/_manifest.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+print("\n".join(sorted({r["task"] for r in m.get("runs", [])})))
+PY
+)
+for TASK in "${TASKS[@]}"; do
+    [ -z "$TASK" ] && continue
+    echo ""
+    echo "=== perf_diag analysis: per-env report for ${TASK} ==="
+    "__PYTHON__" -m perf_diag.analysis --task "${TASK}"
+done
 EOT
 
 python_replace() {
@@ -481,6 +553,7 @@ for script in "$TMP_TRAIN_SCRIPT" "$TMP_ANALYSIS_SCRIPT"; do
     python_replace "$script" "__TRAIN_MANIFEST_JSON__" "$TRAIN_MANIFEST_JSON"
     python_replace "$script" "__SKIP_DONE__" "$SKIP_DONE"
     python_replace "$script" "__MIN_DONE_ROWS__" "$MIN_DONE_ROWS"
+    python_replace "$script" "__MERGE_PREVIOUS__" "$MERGE_PREVIOUS"
     chmod +x "$script"
 done
 
@@ -501,6 +574,7 @@ echo "  log dir          : $LOG_DIR"
 echo "  train manifest   : $TRAIN_MANIFEST_JSON"
 echo "  run train        : $RUN_TRAIN"
 echo "  run analysis     : $RUN_ANALYSIS"
+echo "  merge previous   : $MERGE_PREVIOUS  (combined report scans all $PD_OUT_DIR/*.jsonl)"
 echo "  extra overrides  : ${EXTRA_OVERRIDES:-<none>}"
 echo "  probe knobs      : N_PROBE=$PD_N_PROBE  SEGMENT_LEN=$PD_SEGMENT_LEN  REFIT_PAIRS=$PD_REFIT_PAIRS  K_REFIT=$PD_K_REFIT  PROBE_M=$PD_PROBE_M"
 echo ""

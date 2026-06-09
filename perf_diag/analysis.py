@@ -20,9 +20,14 @@ import matplotlib.pyplot as plt
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_THIS)
+
+# Default paths; main() may override FIGS_DIR / TABLES_DIR / RESULTS_MD_PATH
+# when --out_dir is passed. RUNS_DIR is the source of truth for traces and
+# always points at perf_diag/runs/ (where the SLURM cells deposit JSONLs).
 RUNS_DIR = os.path.join(_THIS, "runs")
 FIGS_DIR = os.path.join(_THIS, "figs")
 TABLES_DIR = os.path.join(_THIS, "tables")
+RESULTS_MD_PATH = os.path.join(_THIS, "results.md")
 os.makedirs(FIGS_DIR, exist_ok=True)
 os.makedirs(TABLES_DIR, exist_ok=True)
 
@@ -361,8 +366,10 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
 # results.md
 # ---------------------------------------------------------------------------
 def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[dict],
-                      fig1_path: str | None, fig2_paths: list[str], fig3_path: str | None) -> str:
-    out = os.path.join(_THIS, "results.md")
+                      fig1_path: str | None, fig2_paths: list[str], fig3_path: str | None,
+                      out_path: str | None = None) -> str:
+    out = out_path or RESULTS_MD_PATH
+    out_dir = os.path.dirname(out)
     cfg = manifest.get("config", {})
     nc = manifest.get("neg_control_validity", {})
 
@@ -387,11 +394,11 @@ def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[
 
     fig_lines = []
     if fig1_path:
-        fig_lines.append(f"- **Fig 1**: ![Fig1]({os.path.relpath(fig1_path, _THIS)})")
+        fig_lines.append(f"- **Fig 1**: ![Fig1]({os.path.relpath(fig1_path, out_dir)})")
     for p in fig2_paths:
-        fig_lines.append(f"- **Fig 2**: ![Fig2]({os.path.relpath(p, _THIS)})")
+        fig_lines.append(f"- **Fig 2**: ![Fig2]({os.path.relpath(p, out_dir)})")
     if fig3_path:
-        fig_lines.append(f"- **Fig 3**: ![Fig3]({os.path.relpath(fig3_path, _THIS)})")
+        fig_lines.append(f"- **Fig 3**: ![Fig3]({os.path.relpath(fig3_path, out_dir)})")
 
     # determine whether the smoke regime actually produced a positive turnover
     pos_turnovers = [r for r in table2_rows if r["regime"] != "frequent_relabel" and r["frac_turned_over"] > 0]
@@ -616,11 +623,45 @@ PYTHONPATH=. python -m perf_diag.analysis            # this report
 
 # ---------------------------------------------------------------------------
 def main(argv=None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", default=None,
+                        help="Filter manifest to a single task; results.md/Figs/Tables go to --out_dir")
+    parser.add_argument("--out_dir", default=None,
+                        help="Override output directory. Defaults to perf_diag/ for combined runs, "
+                             "perf_diag/per_env/<task>/ when --task is set.")
+    args = parser.parse_args(argv)
+
+    # Resolve output directory and override the module-global path constants used everywhere.
+    global FIGS_DIR, TABLES_DIR, RESULTS_MD_PATH
+    if args.out_dir:
+        out_root = args.out_dir
+    elif args.task:
+        out_root = os.path.join(_THIS, "per_env", args.task.replace("/", "_"))
+    else:
+        out_root = _THIS
+    FIGS_DIR = os.path.join(out_root, "figs")
+    TABLES_DIR = os.path.join(out_root, "tables")
+    RESULTS_MD_PATH = os.path.join(out_root, "results.md")
+    os.makedirs(FIGS_DIR, exist_ok=True)
+    os.makedirs(TABLES_DIR, exist_ok=True)
+
     manifest = load_manifest()
     if not manifest["runs"]:
         print("[analysis] no runs in manifest — did you run perf_diag.run first?")
         return 1
-    print(f"[analysis] {len(manifest['runs'])} runs in manifest")
+
+    # Apply task filter if requested
+    if args.task:
+        runs_filtered = [r for r in manifest["runs"] if r.get("task") == args.task]
+        if not runs_filtered:
+            print(f"[analysis] no runs matching task={args.task!r} (available tasks: "
+                  f"{sorted({r.get('task') for r in manifest['runs']})})")
+            return 1
+        manifest = {**manifest, "runs": runs_filtered,
+                    "config": {**manifest.get("config", {}), "tasks": [args.task]}}
+    print(f"[analysis] {len(manifest['runs'])} runs in manifest "
+          f"(task filter: {args.task or '<none, combined>'})  out_dir={out_root}")
 
     fig1_path = fig1(manifest)
     print(f"[analysis] Fig1 -> {fig1_path}")
@@ -635,7 +676,8 @@ def main(argv=None) -> int:
     t2_path, t2_rows = table2(manifest)
     print(f"[analysis] {t2_path}")
 
-    md = write_results_md(manifest, t1_rows, t2_rows, fig1_path, fig2_paths, fig3_path)
+    md = write_results_md(manifest, t1_rows, t2_rows, fig1_path, fig2_paths, fig3_path,
+                          out_path=RESULTS_MD_PATH)
     print(f"[analysis] {md}")
     return 0
 
