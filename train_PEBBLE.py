@@ -95,7 +95,10 @@ class Workspace(object):
             use_wandb=cfg.use_wandb,
             bt_log_period=cfg.bt_log_period,
             feed_type=cfg.feed_type,
-            capacity=cfg.max_feedback * cfg.large_batch)
+            capacity=cfg.max_feedback * cfg.large_batch,
+            hidden_dim=getattr(cfg, "rm_hidden_dim", 256),
+            num_layers=getattr(cfg, "rm_num_layers", 3),
+            output_activation=getattr(cfg, "rm_output_activation", "tanh"))
 
         # ---- performative-gradient diagnostic hooks -----------------------
         if os.environ.get("PD_ENABLE", "0") == "1":

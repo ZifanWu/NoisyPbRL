@@ -2,8 +2,8 @@
 # ==============================================================
 # perf_diag SLURM submission: train array + analysis
 #
-# Cells: (task × P_relabel regime × seed), with per-task max_feedback
-# from perf_diag.run.TASK_DEFAULTS (matches the authors' scripts/).
+# Cells: (task × RM capacity × P_relabel regime × seed), with per-task
+# max_feedback from perf_diag.run.TASK_DEFAULTS (matches the authors' scripts/).
 #
 # Step 1: training array (one cell = one full PEBBLE run with PD_ENABLE=1).
 # Step 2: perf_diag.analysis after the training array completes.
@@ -17,9 +17,10 @@
 #   TIME_LIMIT=36:00:00 bash perf_diag/submit.sh
 #   ENVS='metaworld_drawer-open-v2 metaworld_door-close-v2' bash perf_diag/submit.sh
 #   SEEDS='0 1 2 3 4 5' bash perf_diag/submit.sh
-#   REGIMES='rare_relabel frequent_relabel' bash perf_diag/submit.sh
+#   CAPACITIES='full_rm small_rm' REGIMES='rare_relabel frequent_relabel' bash perf_diag/submit.sh
 #   NUM_TRAIN_STEPS=200000 bash perf_diag/submit.sh
 #   PD_N_PROBE=4 PD_K_REFIT=3 bash perf_diag/submit.sh
+#   PD_STEP_PROBE_EVERY=10000 bash perf_diag/submit.sh
 #   RUN_ANALYSIS=false bash perf_diag/submit.sh
 #   PARTITION=soc-gpu-np bash perf_diag/submit.sh
 #   EXTRA_OVERRIDES='reward_update=200 segment=50' bash perf_diag/submit.sh
@@ -39,10 +40,9 @@ DRY_RUN="${DRY_RUN:-false}"
 RUN_TRAIN="${RUN_TRAIN:-true}"
 RUN_ANALYSIS="${RUN_ANALYSIS:-true}"
 DEPENDENCY_TYPE="${DEPENDENCY_TYPE:-afterany}"
-# Default true: the combined report aggregates EVERY JSONL in PD_OUT_DIR, not just
-# the cells from this submission. Use MERGE_PREVIOUS=false for a clean
-# "only-this-submission" view.
-MERGE_PREVIOUS="${MERGE_PREVIOUS:-true}"
+# Default false: clean reports should only aggregate this submission. Set
+# MERGE_PREVIOUS=true only when intentionally combining old JSONLs.
+MERGE_PREVIOUS="${MERGE_PREVIOUS:-false}"
 
 # Per-cell training budget (matches FullConfig in perf_diag/run.py)
 NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-500000}"
@@ -62,11 +62,13 @@ PD_REFIT_PAIRS="${PD_REFIT_PAIRS:-16}"
 PD_K_REFIT="${PD_K_REFIT:-5}"
 PD_REFIT_LR="${PD_REFIT_LR:-0.0003}"
 PD_PROBE_M="${PD_PROBE_M:-1}"
+PD_STEP_PROBE_EVERY="${PD_STEP_PROBE_EVERY:-10000}"
 
 # Filters (space-separated; empty = use defaults)
 ENVS="${ENVS:-walker_walk}"
 SEEDS="${SEEDS:-0 1 2 3 4 5}"
-REGIMES="${REGIMES:-rare_relabel med_relabel frequent_relabel}"
+CAPACITIES="${CAPACITIES:-full_rm small_rm}"
+REGIMES="${REGIMES:-rare_relabel frequent_relabel}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 
 case "$PARTITION" in
@@ -133,16 +135,16 @@ TRAIN_MANIFEST_CSV="$MANIFEST_DIR/perf_diag_train.csv"
 
 # ==============================================================
 # Build the per-cell training manifest.
-# Cells come from (ENVS × REGIMES × SEEDS); per-task max_feedback +
-# central P_relabel are looked up from perf_diag.run.TASK_DEFAULTS.
+# Cells come from (ENVS × CAPACITIES × REGIMES × SEEDS); per-task
+# max_feedback + central P_relabel are looked up from perf_diag.run.TASK_DEFAULTS.
 # Each cell's command is a full hydra train_PEBBLE.py invocation.
 # ==============================================================
-read -r N_TRAIN < <("$PYTHON" - \
+N_TRAIN="$("$PYTHON" - \
     "$REPO_DIR" "$RESULTS_DIR" "$PD_OUT_DIR" "$USE_WANDB" "$EXTRA_OVERRIDES" \
-    "$ENVS" "$SEEDS" "$REGIMES" \
+    "$ENVS" "$SEEDS" "$CAPACITIES" "$REGIMES" \
     "$NUM_TRAIN_STEPS" "$NUM_SEED_STEPS" "$NUM_UNSUP_STEPS" "$EVAL_FREQUENCY" \
     "$SEGMENT" "$ENSEMBLE_SIZE" "$TEACHER_EPS_MISTAKE" "$TEACHER_BETA" "$REWARD_UPDATE" \
-    "$PD_N_PROBE" "$PD_SEGMENT_LEN" "$PD_REFIT_PAIRS" "$PD_K_REFIT" "$PD_REFIT_LR" "$PD_PROBE_M" \
+    "$PD_N_PROBE" "$PD_SEGMENT_LEN" "$PD_REFIT_PAIRS" "$PD_K_REFIT" "$PD_REFIT_LR" "$PD_PROBE_M" "$PD_STEP_PROBE_EVERY" \
     "$TRAIN_MANIFEST_JSON" "$TRAIN_MANIFEST_CSV" <<'PY'
 import csv
 import json
@@ -157,27 +159,29 @@ use_wandb = sys.argv[4]
 extra_overrides = shlex.split(sys.argv[5]) if sys.argv[5] else []
 envs = shlex.split(sys.argv[6]) if sys.argv[6] else []
 seeds = [int(x) for x in shlex.split(sys.argv[7])] if sys.argv[7] else []
-regime_names = shlex.split(sys.argv[8]) if sys.argv[8] else []
+capacity_names = shlex.split(sys.argv[8]) if sys.argv[8] else []
+regime_names = shlex.split(sys.argv[9]) if sys.argv[9] else []
 
-num_train_steps = int(sys.argv[9])
-num_seed_steps = int(sys.argv[10])
-num_unsup_steps = int(sys.argv[11])
-eval_frequency = int(sys.argv[12])
-segment = int(sys.argv[13])
-ensemble_size = int(sys.argv[14])
-teacher_eps_mistake = float(sys.argv[15])
-teacher_beta = int(sys.argv[16])
-reward_update = int(sys.argv[17])
+num_train_steps = int(sys.argv[10])
+num_seed_steps = int(sys.argv[11])
+num_unsup_steps = int(sys.argv[12])
+eval_frequency = int(sys.argv[13])
+segment = int(sys.argv[14])
+ensemble_size = int(sys.argv[15])
+teacher_eps_mistake = float(sys.argv[16])
+teacher_beta = int(sys.argv[17])
+reward_update = int(sys.argv[18])
 
-pd_n_probe = int(sys.argv[18])
-pd_segment_len = int(sys.argv[19])
-pd_refit_pairs = int(sys.argv[20])
-pd_k_refit = int(sys.argv[21])
-pd_refit_lr = float(sys.argv[22])
-pd_probe_m = int(sys.argv[23])
+pd_n_probe = int(sys.argv[19])
+pd_segment_len = int(sys.argv[20])
+pd_refit_pairs = int(sys.argv[21])
+pd_k_refit = int(sys.argv[22])
+pd_refit_lr = float(sys.argv[23])
+pd_probe_m = int(sys.argv[24])
+pd_step_probe_every = int(sys.argv[25])
 
-train_manifest_json = Path(sys.argv[24])
-train_manifest_csv = Path(sys.argv[25])
+train_manifest_json = Path(sys.argv[26])
+train_manifest_csv = Path(sys.argv[27])
 
 sys.path.insert(0, str(repo_dir))
 from perf_diag.run import TASK_DEFAULTS, task_central_P, task_overrides, RegimeCfg
@@ -190,8 +194,38 @@ def regimes_for_task(task: str):
         "rare_relabel":     RegimeCfg("rare_relabel",     num_interact=int(central * 2),   is_positive=True),
         "med_relabel":      RegimeCfg("med_relabel",      num_interact=int(central),       is_positive=True),
         "frequent_relabel": RegimeCfg("frequent_relabel", num_interact=max(2000, int(central * 0.2)), is_positive=False),
+        "ultra_frequent_relabel": RegimeCfg("ultra_frequent_relabel", num_interact=max(500, int(central * 0.05)), is_positive=False),
     }
     return [mapping[name] for name in regime_names if name in mapping]
+
+
+def capacity_cfgs(names):
+    """Named RM-capacity sweep. Custom tokens may be name:hidden_dim:num_layers:activation."""
+    presets = {
+        "full_rm": dict(capacity="full_rm", rm_hidden_dim=256, rm_num_layers=3,
+                        rm_output_activation="tanh", is_capacity_limited=False),
+        "small_rm": dict(capacity="small_rm", rm_hidden_dim=16, rm_num_layers=1,
+                         rm_output_activation="tanh", is_capacity_limited=True),
+        "linear_rm": dict(capacity="linear_rm", rm_hidden_dim=0, rm_num_layers=0,
+                          rm_output_activation="none", is_capacity_limited=True),
+    }
+    out = []
+    for token in names:
+        if token in presets:
+            out.append(presets[token])
+            continue
+        parts = token.split(":")
+        if len(parts) != 4:
+            raise ValueError(
+                f"unknown capacity {token!r}; use one of {sorted(presets)} "
+                "or name:hidden_dim:num_layers:activation"
+            )
+        name, hidden_dim, num_layers, activation = parts
+        out.append(dict(capacity=name, rm_hidden_dim=int(hidden_dim),
+                        rm_num_layers=int(num_layers),
+                        rm_output_activation=activation,
+                        is_capacity_limited=(name != "full_rm")))
+    return out
 
 
 def qjoin(parts):
@@ -214,67 +248,79 @@ def dedupe_cli_overrides(parts):
 
 
 cells = []
+capacities = capacity_cfgs(capacity_names)
 for task in envs:
     overrides_per_task = task_overrides(task)
     max_feedback = overrides_per_task.get("max_feedback", 1400)
-    for regime in regimes_for_task(task):
-        for seed in seeds:
-            run_name = f"{task}__{regime.name}__seed{seed}"
-            run_dir = results_dir / task / regime.name / f"seed{seed}"
-            jsonl_path = pd_out_dir / f"{run_name}.jsonl"
-            cli = [
-                "__PYTHON_BIN__", "train_PEBBLE.py",
-                f"env={task}",
-                f"seed={seed}",
-                f"num_interact={regime.num_interact}",
-                f"num_train_steps={num_train_steps}",
-                f"num_seed_steps={num_seed_steps}",
-                f"num_unsup_steps={num_unsup_steps}",
-                f"eval_frequency={eval_frequency}",
-                f"segment={segment}",
-                f"ensemble_size={ensemble_size}",
-                f"teacher_eps_mistake={teacher_eps_mistake}",
-                f"teacher_beta={teacher_beta}",
-                f"max_feedback={max_feedback}",
-                f"reward_update={reward_update}",
-                f"use_wandb={use_wandb}",
-                "log_save_tb=false",
-                "save_video=false",
-                "gpu=0",
-                f"hydra.run.dir={run_dir}",
-            ]
-            cli.extend(extra_overrides)
-            cli = dedupe_cli_overrides(cli)
-            cells.append({
-                "task": task,
-                "regime": regime.name,
-                "is_positive": bool(regime.is_positive),
-                "seed": int(seed),
-                "max_feedback": int(max_feedback),
-                "num_interact": int(regime.num_interact),
-                "run_name": run_name,
-                "run_dir": str(run_dir),
-                "jsonl_path": str(jsonl_path),
-                "command": qjoin(cli),
-                # PD_* env vars per-cell so each run gets the right run name/tag
-                "env_pd": {
-                    "PD_ENABLE": "1",
-                    "PD_RUN_NAME": run_name,
-                    "PD_TAG_POSITIVE": "positive" if regime.is_positive else "negative_control",
-                    "PD_N_PROBE": str(pd_n_probe),
-                    "PD_SEGMENT_LEN": str(pd_segment_len),
-                    "PD_REFIT_PAIRS": str(pd_refit_pairs),
-                    "PD_K_REFIT": str(pd_k_refit),
-                    "PD_REFIT_LR": str(pd_refit_lr),
-                    "PD_PROBE_M": str(pd_probe_m),
-                    "PD_OUT_DIR": str(pd_out_dir),
-                },
-            })
+    for cap in capacities:
+        for regime in regimes_for_task(task):
+            for seed in seeds:
+                run_name = f"{task}__{cap['capacity']}__{regime.name}__seed{seed}"
+                run_dir = results_dir / task / cap["capacity"] / regime.name / f"seed{seed}"
+                jsonl_path = pd_out_dir / f"{run_name}.jsonl"
+                cli = [
+                    "__PYTHON_BIN__", "train_PEBBLE.py",
+                    f"env={task}",
+                    f"seed={seed}",
+                    f"num_interact={regime.num_interact}",
+                    f"num_train_steps={num_train_steps}",
+                    f"num_seed_steps={num_seed_steps}",
+                    f"num_unsup_steps={num_unsup_steps}",
+                    f"eval_frequency={eval_frequency}",
+                    f"segment={segment}",
+                    f"ensemble_size={ensemble_size}",
+                    f"teacher_eps_mistake={teacher_eps_mistake}",
+                    f"teacher_beta={teacher_beta}",
+                    f"max_feedback={max_feedback}",
+                    f"reward_update={reward_update}",
+                    f"rm_hidden_dim={cap['rm_hidden_dim']}",
+                    f"rm_num_layers={cap['rm_num_layers']}",
+                    f"rm_output_activation={cap['rm_output_activation']}",
+                    f"use_wandb={use_wandb}",
+                    "log_save_tb=false",
+                    "save_video=false",
+                    "gpu=0",
+                    f"hydra.run.dir={run_dir}",
+                ]
+                cli.extend(extra_overrides)
+                cli = dedupe_cli_overrides(cli)
+                cells.append({
+                    "task": task,
+                    "capacity": cap["capacity"],
+                    "is_capacity_limited": bool(cap["is_capacity_limited"]),
+                    "rm_hidden_dim": int(cap["rm_hidden_dim"]),
+                    "rm_num_layers": int(cap["rm_num_layers"]),
+                    "rm_output_activation": cap["rm_output_activation"],
+                    "regime": regime.name,
+                    "is_positive": bool(regime.is_positive),
+                    "seed": int(seed),
+                    "max_feedback": int(max_feedback),
+                    "num_interact": int(regime.num_interact),
+                    "run_name": run_name,
+                    "run_dir": str(run_dir),
+                    "jsonl_path": str(jsonl_path),
+                    "command": qjoin(cli),
+                    # PD_* env vars per-cell so each run gets the right run name/tag
+                    "env_pd": {
+                        "PD_ENABLE": "1",
+                        "PD_RUN_NAME": run_name,
+                        "PD_TAG_POSITIVE": "positive" if regime.is_positive else "negative_control",
+                        "PD_N_PROBE": str(pd_n_probe),
+                        "PD_SEGMENT_LEN": str(pd_segment_len),
+                        "PD_REFIT_PAIRS": str(pd_refit_pairs),
+                        "PD_K_REFIT": str(pd_k_refit),
+                        "PD_REFIT_LR": str(pd_refit_lr),
+                        "PD_PROBE_M": str(pd_probe_m),
+                        "PD_STEP_PROBE_EVERY": str(pd_step_probe_every),
+                        "PD_OUT_DIR": str(pd_out_dir),
+                    },
+                })
 
 train_manifest_json.parent.mkdir(parents=True, exist_ok=True)
 json.dump(cells, open(train_manifest_json, "w", encoding="utf-8"), indent=2)
 if cells:
-    fieldnames = ["task", "regime", "is_positive", "seed", "max_feedback",
+    fieldnames = ["task", "capacity", "is_capacity_limited", "rm_hidden_dim",
+                  "rm_num_layers", "rm_output_activation", "regime", "is_positive", "seed", "max_feedback",
                   "num_interact", "run_name", "run_dir", "jsonl_path", "command"]
     with open(train_manifest_csv, "w", newline="", encoding="utf-8") as f:
         wr = csv.DictWriter(f, fieldnames=fieldnames)
@@ -284,7 +330,7 @@ if cells:
 
 print(len(cells))
 PY
-)
+)"
 
 if [ "$N_TRAIN" -le 0 ]; then
     echo "ERROR: no perf_diag training cells generated"
@@ -313,8 +359,8 @@ TRAIN_ARRAY_SPEC="$(array_spec "$N_TRAIN" "$MAX_CONCURRENT")"
 
 TRAIN_JOB_NAME="perf_diag_train"
 ANALYSIS_JOB_NAME="perf_diag_analysis"
-TMP_TRAIN_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${TRAIN_JOB_NAME}_XXXXXX.sh")"
-TMP_ANALYSIS_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${ANALYSIS_JOB_NAME}_XXXXXX.sh")"
+TMP_TRAIN_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${TRAIN_JOB_NAME}_XXXXXX")"
+TMP_ANALYSIS_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${ANALYSIS_JOB_NAME}_XXXXXX")"
 
 # ==============================================================
 # Per-cell training array script.
@@ -409,24 +455,63 @@ set -euo pipefail
 cd "__SCRIPT_DIR__"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-__ANALYSIS_CPUS_PER_TASK__}"
 export PYTHONPATH="__SCRIPT_DIR__:${PYTHONPATH:-}"
+export PD_OUT_DIR="__PD_OUT_DIR__"
 
 # Step 0: rebuild a manifest of completed runs from the JSONL traces in PD_OUT_DIR.
 # This is the file that perf_diag.analysis reads.
 # When MERGE_PREVIOUS=true, also scan any JSONL in PD_OUT_DIR that wasn't part of
 # this submission's train_manifest (i.e., runs left over from previous submissions).
-# Filename convention: <task>__<regime>__seed<N>.jsonl.
+# Filename convention:
+#   new: <task>__<capacity>__<regime>__seed<N>.jsonl
+#   old: <task>__<regime>__seed<N>.jsonl
 "__PYTHON__" - "__TRAIN_MANIFEST_JSON__" "__PD_OUT_DIR__" "__MERGE_PREVIOUS__" <<'PY'
 import json, re, sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path.cwd()))
+from perf_diag import detect
 
 train_manifest = json.load(open(sys.argv[1], "r", encoding="utf-8"))
 out_dir = Path(sys.argv[2])
 merge_previous = sys.argv[3].lower() in {"1", "true", "yes", "y", "on"}
 
 POSITIVE_REGIMES = {"rare_relabel", "med_relabel"}
-NEGATIVE_REGIMES = {"frequent_relabel"}
+NEGATIVE_REGIMES = {"frequent_relabel", "ultra_frequent_relabel"}
 KNOWN_REGIMES = POSITIVE_REGIMES | NEGATIVE_REGIMES
-FILENAME_RE = re.compile(r"^(?P<task>.+)__(?P<regime>[^_]+(?:_[^_]+)*)__seed(?P<seed>\d+)\.jsonl$")
+FILENAME_RE = re.compile(r"^(?P<prefix>.+)__seed(?P<seed>\d+)\.jsonl$")
+
+
+def parse_jsonl_name(path: Path):
+    m = FILENAME_RE.match(path.name)
+    if not m:
+        return None
+    parts = m.group("prefix").split("__")
+    seed = int(m.group("seed"))
+    if len(parts) >= 3 and parts[-1] in KNOWN_REGIMES:
+        task = "__".join(parts[:-2])
+        capacity = parts[-2]
+        regime = parts[-1]
+    elif len(parts) >= 2 and parts[-1] in KNOWN_REGIMES:
+        task = "__".join(parts[:-1])
+        capacity = "default_rm"
+        regime = parts[-1]
+    else:
+        return None
+    return task, capacity, regime, seed
+
+
+def load_gold(path: str):
+    vals = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            val = row.get("gold_eval")
+            if isinstance(val, (int, float)):
+                vals.append(float(val))
+    return vals
 
 runs = []
 seen_paths = set()
@@ -443,6 +528,11 @@ for cell in train_manifest:
         "jsonl": str(jsonl),
         "regime": cell["regime"],
         "task": cell["task"],
+        "capacity": cell.get("capacity", "default_rm"),
+        "is_capacity_limited": bool(cell.get("is_capacity_limited", False)),
+        "rm_hidden_dim": cell.get("rm_hidden_dim"),
+        "rm_num_layers": cell.get("rm_num_layers"),
+        "rm_output_activation": cell.get("rm_output_activation"),
         "seed": cell["seed"],
         "is_positive": cell["is_positive"],
         "source": "this_submission",
@@ -457,40 +547,51 @@ if merge_previous and out_dir.exists():
             continue
         if jsonl.stat().st_size == 0:
             continue
-        m = FILENAME_RE.match(jsonl.name)
-        if not m:
+        parsed = parse_jsonl_name(jsonl)
+        if not parsed:
             # Skip files like smoke_test.jsonl that don't match the convention.
             n_skipped_unknown += 1
             continue
-        task = m.group("task")
-        regime = m.group("regime")
-        seed = int(m.group("seed"))
-        if regime not in KNOWN_REGIMES:
-            n_skipped_unknown += 1
-            continue
+        task, capacity, regime, seed = parsed
         is_positive = regime in POSITIVE_REGIMES
         runs.append({
-            "run_name": f"{task}__{regime}__seed{seed}",
+            "run_name": jsonl.stem,
             "status": "completed",
             "jsonl": str(jsonl),
             "regime": regime,
             "task": task,
+            "capacity": capacity,
+            "is_capacity_limited": capacity not in {"full_rm", "default_rm"},
+            "rm_hidden_dim": None,
+            "rm_num_layers": None,
+            "rm_output_activation": None,
             "seed": seed,
             "is_positive": is_positive,
             "source": "previous_submission",
         })
         n_merged_in += 1
 
+bad_neg = []
+for r in runs:
+    if r.get("is_positive", True):
+        continue
+    gold = load_gold(r["jsonl"])
+    if len(gold) < 5:
+        continue
+    if detect.turned_over_in_horizon(gold, K_decline=3, alpha=0.3, min_drop_frac=0.1):
+        bad_neg.append(r["run_name"])
+
 manifest = {
     "runs": runs,
     "config": {
         "quick": False,
         "tasks": sorted({r["task"] for r in runs}),
+        "capacities": sorted({r.get("capacity", "default_rm") for r in runs}),
         "seeds": sorted({r["seed"] for r in runs}),
         "regimes": sorted({r["regime"] for r in runs}),
         "merge_previous": bool(merge_previous),
     },
-    "neg_control_validity": {"ok": True, "bad": []},
+    "neg_control_validity": {"ok": len(bad_neg) == 0, "bad": bad_neg},
 }
 manifest_path = out_dir / "_manifest.json"
 manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -505,18 +606,20 @@ PY
 echo "=== perf_diag analysis: combined report ==="
 "__PYTHON__" -m perf_diag.analysis
 
-# Per-env reports: one results.md / Figs / Tables per task (mirrors axis2's pattern).
-mapfile -t TASKS < <("__PYTHON__" - "__PD_OUT_DIR__/_manifest.json" <<'PY'
+# Per-cell reports: one results.md / Figs / Tables per task × capacity.
+mapfile -t TASK_CAPS < <("__PYTHON__" - "__PD_OUT_DIR__/_manifest.json" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1], "r", encoding="utf-8"))
-print("\n".join(sorted({r["task"] for r in m.get("runs", [])})))
+for task, capacity in sorted({(r["task"], r.get("capacity", "default_rm")) for r in m.get("runs", [])}):
+    print(f"{task}\t{capacity}")
 PY
 )
-for TASK in "${TASKS[@]}"; do
-    [ -z "$TASK" ] && continue
+for TASK_CAP in "${TASK_CAPS[@]}"; do
+    [ -z "$TASK_CAP" ] && continue
+    IFS=$'\t' read -r TASK CAPACITY <<< "$TASK_CAP"
     echo ""
-    echo "=== perf_diag analysis: per-env report for ${TASK} ==="
-    "__PYTHON__" -m perf_diag.analysis --task "${TASK}"
+    echo "=== perf_diag analysis: per-cell report for ${TASK} / ${CAPACITY} ==="
+    "__PYTHON__" -m perf_diag.analysis --task "${TASK}" --capacity "${CAPACITY}"
 done
 EOT
 
@@ -560,6 +663,7 @@ done
 echo "=== perf_diag SLURM submission ==="
 echo "  envs             : $ENVS"
 echo "  seeds            : $SEEDS"
+echo "  capacities       : $CAPACITIES"
 echo "  regimes          : $REGIMES"
 echo "  num_train_steps  : $NUM_TRAIN_STEPS"
 echo "  train cells      : $N_TRAIN"
@@ -576,7 +680,7 @@ echo "  run train        : $RUN_TRAIN"
 echo "  run analysis     : $RUN_ANALYSIS"
 echo "  merge previous   : $MERGE_PREVIOUS  (combined report scans all $PD_OUT_DIR/*.jsonl)"
 echo "  extra overrides  : ${EXTRA_OVERRIDES:-<none>}"
-echo "  probe knobs      : N_PROBE=$PD_N_PROBE  SEGMENT_LEN=$PD_SEGMENT_LEN  REFIT_PAIRS=$PD_REFIT_PAIRS  K_REFIT=$PD_K_REFIT  PROBE_M=$PD_PROBE_M"
+echo "  probe knobs      : N_PROBE=$PD_N_PROBE  SEGMENT_LEN=$PD_SEGMENT_LEN  REFIT_PAIRS=$PD_REFIT_PAIRS  K_REFIT=$PD_K_REFIT  PROBE_M=$PD_PROBE_M  STEP_PROBE_EVERY=$PD_STEP_PROBE_EVERY"
 echo ""
 
 if [ "$DRY_RUN" = "true" ]; then

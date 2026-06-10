@@ -36,6 +36,7 @@ _CFG_DEFAULTS = dict(
     PD_K_REFIT="5",
     PD_REFIT_LR="0.0003",
     PD_PROBE_M="1",        # fire every M relabels
+    PD_STEP_PROBE_EVERY="0",  # additionally probe every N env steps; 0 disables
     PD_OUT_DIR=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"),
     PD_RUN_NAME="default",
     PD_TAG_POSITIVE="positive",   # "positive" or "negative_control"
@@ -107,6 +108,7 @@ class ProbeRecorder:
         self.is_positive = (_cfg("PD_TAG_POSITIVE") == "positive")
         self._t0 = time.time()
         self._pretrain_actor_state = None
+        self._last_probe_step = -1
         # Latest eval values we shadow from the Workspace.evaluate() return path
         self._last_eval = dict(true_episode_reward=float("nan"),
                                episode_reward=float("nan"),
@@ -117,6 +119,7 @@ class ProbeRecorder:
         wp = self.workspace
         orig_relabel = wp.replay_buffer.relabel_with_predictor
         orig_evaluate = wp.evaluate
+        orig_add = wp.replay_buffer.add
 
         recorder = self
 
@@ -125,12 +128,18 @@ class ProbeRecorder:
             recorder._on_relabel()
             return ret
 
+        def wrapped_add(obs, action, reward, next_obs, done, done_no_max):
+            ret = orig_add(obs, action, reward, next_obs, done, done_no_max)
+            recorder._on_step()
+            return ret
+
         def wrapped_evaluate(*args, **kwargs):
             ret = orig_evaluate(*args, **kwargs)
             recorder._snapshot_eval()
             return ret
 
         wp.replay_buffer.relabel_with_predictor = wrapped_relabel  # type: ignore[assignment]
+        wp.replay_buffer.add = wrapped_add                          # type: ignore[assignment]
         wp.evaluate = wrapped_evaluate                              # type: ignore[assignment]
         wp._perf_diag_recorder = recorder
 
@@ -253,6 +262,32 @@ class ProbeRecorder:
         self.relabel_idx += 1
         if (self.relabel_idx % int(_cfg("PD_PROBE_M"))) != 0:
             return
+        self._record_probe(event="relabel")
+
+    def _on_step(self):
+        """Optional full probe on a wall-clock step cadence.
+
+        Relabel-triggered probes stop once max_feedback is exhausted. This cadence keeps
+        the diagnostic/gold curve alive through the rest of training, which is necessary
+        when reward over-optimization happens after the preference budget is saturated.
+        """
+        if int(_cfg("PD_ENABLE")) == 0:
+            return
+        every = int(_cfg("PD_STEP_PROBE_EVERY"))
+        if every <= 0:
+            return
+        wp = self.workspace
+        step = int(getattr(wp, "step", 0))
+        if step <= int(getattr(wp.cfg, "num_seed_steps", 0)) + int(getattr(wp.cfg, "num_unsup_steps", 0)):
+            return
+        if step == self._last_probe_step:
+            return
+        if (step % every) != 0:
+            return
+        self._record_probe(event="step_probe")
+
+    def _record_probe(self, event: str):
+        wp = self.workspace
         # First relabel after unsup ⇒ snapshot pretrain actor for KL baseline
         if self._pretrain_actor_state is None:
             self._snapshot_pretrain_actor()
@@ -268,7 +303,9 @@ class ProbeRecorder:
                 raise RuntimeError(f"probe env_factory failed: {exc}")
 
         try:
-            probe_seed = int(getattr(wp.cfg, "seed", 0)) * 100003 + self.relabel_idx
+            probe_seed = (int(getattr(wp.cfg, "seed", 0)) * 100003
+                          + int(self.relabel_idx) * 997
+                          + int(getattr(wp, "step", 0)))
             probe_out = _probe.run_probe(
                 actor=wp.agent.actor,
                 reward_model=wp.reward_model,
@@ -287,6 +324,7 @@ class ProbeRecorder:
         kl, ent = self._kl_to_pretrain_and_entropy()
         gold_now = self._evaluate_gold_now()
         row = dict(
+            event=str(event),
             relabel_idx=int(self.relabel_idx),
             step=int(wp.step),
             wall=time.time() - self._t0,
@@ -297,6 +335,7 @@ class ProbeRecorder:
         )
         with open(self.path, "a") as f:
             f.write(json.dumps(row) + "\n")
+        self._last_probe_step = int(wp.step)
         # Also push to the existing tb/wandb logger for live visibility.
         try:
             wp.logger.log("probe/kappa", row.get("kappa", float("nan")), wp.step)

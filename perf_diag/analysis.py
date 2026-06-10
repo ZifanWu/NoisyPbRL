@@ -22,9 +22,10 @@ _THIS = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_THIS)
 
 # Default paths; main() may override FIGS_DIR / TABLES_DIR / RESULTS_MD_PATH
-# when --out_dir is passed. RUNS_DIR is the source of truth for traces and
-# always points at perf_diag/runs/ (where the SLURM cells deposit JSONLs).
-RUNS_DIR = os.path.join(_THIS, "runs")
+# when --out_dir is passed. RUNS_DIR is the source of truth for traces; submit.sh
+# exports PD_OUT_DIR so clean reruns can use a fresh trace directory without
+# deleting older JSONLs.
+RUNS_DIR = os.environ.get("PD_OUT_DIR", os.path.join(_THIS, "runs"))
 FIGS_DIR = os.path.join(_THIS, "figs")
 TABLES_DIR = os.path.join(_THIS, "tables")
 RESULTS_MD_PATH = os.path.join(_THIS, "results.md")
@@ -35,6 +36,10 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from perf_diag import baselines, detect
+
+
+def run_capacity(run: dict) -> str:
+    return str(run.get("capacity", "default_rm"))
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +192,7 @@ def fig1(manifest: dict, threshold_for_R: float = 0.5) -> str | None:
 # ---------------------------------------------------------------------------
 SIGNAL_FNS = {
     "R_hat": lambda tr: baselines.R_degradation_signal(tr.get("R_inner", np.array([]))),
+    "kappa": lambda tr: baselines.ema_smooth(tr.get("kappa", np.array([])), alpha=0.3),
     "proxy_inflection": lambda tr: baselines.proxy_inflection_signal(tr.get("proxy_mean", np.array([]))),
     "kl_to_pretrain": lambda tr: baselines.kl_to_pretrain_signal(tr.get("kl_to_pretrain", np.array([]))),
     "entropy_drop": lambda tr: baselines.entropy_drop_signal(tr.get("policy_entropy", np.array([]))),
@@ -194,10 +200,12 @@ SIGNAL_FNS = {
 }
 
 
-def _make_signal_runs_for_task(manifest: dict, task: str, signal_name: str) -> list[detect.SignalRun]:
+def _make_signal_runs_for_group(manifest: dict, task: str, capacity: str, signal_name: str) -> list[detect.SignalRun]:
     runs = []
     for r in manifest["runs"]:
         if r.get("task") != task:
+            continue
+        if run_capacity(r) != capacity:
             continue
         tr = trace_arrays(load_trace(r["jsonl"]))
         if not tr or tr.get("gold_eval", np.array([])).size < 5:
@@ -210,17 +218,21 @@ def _make_signal_runs_for_task(manifest: dict, task: str, signal_name: str) -> l
 
 
 def fig2(manifest: dict) -> list[str]:
-    tasks = sorted({r["task"] for r in manifest["runs"]})
+    groups = sorted({(r["task"], run_capacity(r)) for r in manifest["runs"]})
     saved = []
-    for task in tasks:
+    for task, capacity in groups:
         fig, ax = plt.subplots(figsize=(7, 4.5))
         plotted = False
         for sname in SIGNAL_FNS:
-            runs = _make_signal_runs_for_task(manifest, task, sname)
-            if not any(r.is_positive for r in runs):
+            runs = _make_signal_runs_for_group(manifest, task, capacity, sname)
+            if not any(r.is_positive for r in runs) or not any(not r.is_positive for r in runs):
                 continue
             # threshold range = signal percentiles
-            sig_concat = np.concatenate([r.signal for r in runs if r.signal.size])
+            sig_arrays = [r.signal for r in runs if r.signal.size]
+            if not sig_arrays:
+                continue
+            sig_concat = np.concatenate(sig_arrays)
+            sig_concat = sig_concat[np.isfinite(sig_concat)]
             if sig_concat.size == 0:
                 continue
             thr = np.unique(np.quantile(sig_concat, np.linspace(0.05, 0.99, 30)))
@@ -232,12 +244,12 @@ def fig2(manifest: dict) -> list[str]:
         ax.axvline(0.1, color="k", ls=":", alpha=0.4, label="target FAR=0.1")
         ax.set_xlabel("false-alarm rate (over negative-control runs)")
         ax.set_ylabel("mean lead time (probe steps)")
-        ax.set_title(f"{task} — lead vs FAR")
+        ax.set_title(f"{task} / {capacity} — lead vs FAR")
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
         fig.tight_layout()
         safe = task.replace("/", "_")
-        p = os.path.join(FIGS_DIR, f"Fig2_{safe}.png")
+        p = os.path.join(FIGS_DIR, f"Fig2_{safe}_{capacity}.png")
         fig.savefig(p, dpi=150); plt.close(fig); saved.append(p)
     return saved
 
@@ -246,13 +258,13 @@ def fig2(manifest: dict) -> list[str]:
 # Figure 3 — probe stability
 # ---------------------------------------------------------------------------
 def fig3(manifest: dict) -> str | None:
-    """Distribution of R̂ across relabel steps within a positive run, plus mean R̂ per regime."""
+    """Distribution of R̂ across probe steps by capacity × relabel regime."""
     by_regime: dict[str, list[np.ndarray]] = defaultdict(list)
     for r in manifest["runs"]:
         tr = trace_arrays(load_trace(r["jsonl"]))
         if "R_inner" not in tr or tr["R_inner"].size == 0:
             continue
-        by_regime[r["regime"]].append(tr["R_inner"])
+        by_regime[f"{run_capacity(r)}/{r['regime']}"].append(tr["R_inner"])
     if not by_regime:
         return None
     fig, axes = plt.subplots(1, 2, figsize=(11, 4))
@@ -269,7 +281,7 @@ def fig3(manifest: dict) -> str | None:
         axes[0].axhline(1.0, color="g", ls=":", alpha=0.4, label="R̂=1 (healthy)")
         axes[0].axhline(0.0, color="r", ls=":", alpha=0.4, label="R̂=0 (vanishing)")
         axes[0].set_ylabel("R̂")
-        axes[0].set_title("R̂ across relabel rounds, by regime")
+        axes[0].set_title("R̂ across probe rounds, by capacity/regime")
         axes[0].legend(fontsize=8)
         axes[0].grid(alpha=0.3)
     # Right: per-run trace of R̂ smoothed
@@ -283,7 +295,7 @@ def fig3(manifest: dict) -> str | None:
     axes[1].axhline(1.0, color="g", ls=":", alpha=0.4)
     axes[1].axhline(0.0, color="r", ls=":", alpha=0.4)
     axes[1].set_xlabel("relabel index"); axes[1].set_ylabel("smoothed R̂")
-    axes[1].set_title("R̂ trajectories (solid = positive, dashed = neg ctrl)")
+    axes[1].set_title("R̂ trajectories (solid = rare/positive, dashed = frequent/neg ctrl)")
     axes[1].legend(fontsize=6, loc="best", ncol=1)
     axes[1].grid(alpha=0.3)
     fig.tight_layout()
@@ -296,40 +308,48 @@ def fig3(manifest: dict) -> str | None:
 # Tables
 # ---------------------------------------------------------------------------
 def table1(manifest: dict, target_far: float = 0.1) -> tuple[str, list[dict]]:
-    """lead@FAR=0.1 per signal × task with bootstrap CI."""
-    tasks = sorted({r["task"] for r in manifest["runs"]})
+    """lead@FAR=0.1 per signal × task × capacity with bootstrap CI."""
+    groups = sorted({(r["task"], run_capacity(r)) for r in manifest["runs"]})
     rows = []
-    for task in tasks:
+    for task, capacity in groups:
         for sname in SIGNAL_FNS:
-            srs = _make_signal_runs_for_task(manifest, task, sname)
-            if not any(r.is_positive for r in srs):
+            srs = _make_signal_runs_for_group(manifest, task, capacity, sname)
+            n_pos = sum(1 for r in srs if r.is_positive)
+            n_neg = sum(1 for r in srs if not r.is_positive)
+            if n_pos == 0 or n_neg == 0:
+                rows.append(dict(task=task, capacity=capacity, signal=sname,
+                                  lead_at_far=float("nan"), ci_lo=float("nan"), ci_hi=float("nan"),
+                                  n_pos=n_pos, n_neg=n_neg))
                 continue
-            sig_concat = np.concatenate([r.signal for r in srs if r.signal.size])
+            sig_arrays = [r.signal for r in srs if r.signal.size]
+            if not sig_arrays:
+                continue
+            sig_concat = np.concatenate(sig_arrays)
+            sig_concat = sig_concat[np.isfinite(sig_concat)]
             if sig_concat.size == 0:
                 continue
             thr = np.unique(np.quantile(sig_concat, np.linspace(0.05, 0.99, 30)))
             mean, lo, hi = detect.bootstrap_lead_at_far(srs, thr, target_far=target_far, K_persist=2)
-            rows.append(dict(task=task, signal=sname,
+            rows.append(dict(task=task, capacity=capacity, signal=sname,
                               lead_at_far=mean, ci_lo=lo, ci_hi=hi,
-                              n_pos=sum(1 for r in srs if r.is_positive),
-                              n_neg=sum(1 for r in srs if not r.is_positive)))
+                              n_pos=n_pos, n_neg=n_neg))
     p = os.path.join(TABLES_DIR, "Table1.csv")
     with open(p, "w", newline="") as f:
         wr = csv.writer(f)
-        wr.writerow(["task", "signal", "lead_at_far=0.1", "ci_lo", "ci_hi", "n_pos", "n_neg"])
+        wr.writerow(["task", "capacity", "signal", "lead_at_far=0.1", "ci_lo", "ci_hi", "n_pos", "n_neg"])
         for r in rows:
-            wr.writerow([r["task"], r["signal"],
+            wr.writerow([r["task"], r["capacity"], r["signal"],
                          f"{r['lead_at_far']:.3g}", f"{r['ci_lo']:.3g}", f"{r['ci_hi']:.3g}",
                          r["n_pos"], r["n_neg"]])
     return p, rows
 
 
 def table2(manifest: dict) -> tuple[str, list[dict]]:
-    """Regime summary."""
+    """Capacity × relabel-regime summary."""
     rows = []
-    regimes = sorted({r["regime"] for r in manifest["runs"]})
-    for regime in regimes:
-        runs = [r for r in manifest["runs"] if r["regime"] == regime]
+    groups = sorted({(run_capacity(r), r["regime"]) for r in manifest["runs"]})
+    for capacity, regime in groups:
+        runs = [r for r in manifest["runs"] if run_capacity(r) == capacity and r["regime"] == regime]
         traces = [trace_arrays(load_trace(r["jsonl"])) for r in runs]
         gold_turnovers = []
         kappas = []
@@ -344,7 +364,10 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
             if "R_inner" in tr and tr["R_inner"].size:
                 R_inners.append(np.nanmean(tr["R_inner"]))
         rows.append(dict(
+            capacity=capacity,
             regime=regime,
+            is_capacity_limited=bool(runs[0].get("is_capacity_limited", capacity not in {"full_rm", "default_rm"})) if runs else False,
+            is_positive=bool(runs[0].get("is_positive", regime not in {"frequent_relabel", "ultra_frequent_relabel"})) if runs else False,
             n_runs=len(runs),
             frac_turned_over=float(np.mean(gold_turnovers)) if gold_turnovers else float("nan"),
             mean_kappa=float(np.mean(kappas)) if kappas else float("nan"),
@@ -353,9 +376,10 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
     p = os.path.join(TABLES_DIR, "Table2.csv")
     with open(p, "w", newline="") as f:
         wr = csv.writer(f)
-        wr.writerow(["regime", "n_runs", "frac_turned_over", "mean_kappa", "mean_R_inner"])
+        wr.writerow(["capacity", "regime", "is_positive", "is_capacity_limited", "n_runs",
+                     "frac_turned_over", "mean_kappa", "mean_R_inner"])
         for r in rows:
-            wr.writerow([r["regime"], r["n_runs"],
+            wr.writerow([r["capacity"], r["regime"], r["is_positive"], r["is_capacity_limited"], r["n_runs"],
                          f"{r['frac_turned_over']:.3g}",
                          f"{r['mean_kappa']:.3g}",
                          f"{r['mean_R_inner']:.3g}"])
@@ -374,21 +398,22 @@ def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[
     nc = manifest.get("neg_control_validity", {})
 
     t1_lines = [
-        "| task | signal | lead@FAR=0.1 | 95% CI | n_pos | n_neg |",
-        "|---|---|---|---|---|---|",
+        "| task | capacity | signal | lead@FAR=0.1 | 95% CI | n_pos | n_neg |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in table1_rows:
         t1_lines.append(
-            f"| {r['task']} | {r['signal']} | {r['lead_at_far']:.3g} | "
+            f"| {r['task']} | {r['capacity']} | {r['signal']} | {r['lead_at_far']:.3g} | "
             f"[{r['ci_lo']:.3g}, {r['ci_hi']:.3g}] | {r['n_pos']} | {r['n_neg']} |"
         )
     t2_lines = [
-        "| regime | n_runs | frac turned over | mean κ̂ | mean R̂ |",
-        "|---|---|---|---|---|",
+        "| capacity | regime | role | n_runs | frac turned over | mean κ̂ | mean R̂ |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in table2_rows:
+        role = "positive" if r.get("is_positive") else "negative-control"
         t2_lines.append(
-            f"| {r['regime']} | {r['n_runs']} | {r['frac_turned_over']:.3g} | "
+            f"| {r['capacity']} | {r['regime']} | {role} | {r['n_runs']} | {r['frac_turned_over']:.3g} | "
             f"{r['mean_kappa']:.3g} | {r['mean_R_inner']:.3g} |"
         )
 
@@ -400,22 +425,24 @@ def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[
     if fig3_path:
         fig_lines.append(f"- **Fig 3**: ![Fig3]({os.path.relpath(fig3_path, out_dir)})")
 
-    # determine whether the smoke regime actually produced a positive turnover
-    pos_turnovers = [r for r in table2_rows if r["regime"] != "frequent_relabel" and r["frac_turned_over"] > 0]
+    # determine whether the positive regimes actually produced turnover
+    pos_turnovers = [r for r in table2_rows if r.get("is_positive") and r["frac_turned_over"] > 0]
     pos_observed = len(pos_turnovers) > 0
 
-    # Build the spec's "Part-3" claim summary from Table 2: does R̂ track staleness?
-    pos_R = [r["mean_R_inner"] for r in table2_rows if r["regime"] != "frequent_relabel"]
-    neg_R = [r["mean_R_inner"] for r in table2_rows if r["regime"] == "frequent_relabel"]
+    # Build the spec's "Part-3" claim summary from Table 2 within one capacity group.
+    capacities = sorted({r["capacity"] for r in table2_rows})
+    headline_capacity = "full_rm" if "full_rm" in capacities else (capacities[0] if capacities else "default_rm")
+    pos_R = [r["mean_R_inner"] for r in table2_rows
+             if r["capacity"] == headline_capacity and r.get("is_positive")]
+    neg_R = [r["mean_R_inner"] for r in table2_rows
+             if r["capacity"] == headline_capacity and not r.get("is_positive")]
     R_staleness_tracking = ""
     if pos_R and neg_R and not np.isnan(pos_R[0]) and not np.isnan(neg_R[0]):
         R_staleness_tracking = (
-            f"**Part-3 prediction confirmed even at smoke scale:** mean R̂ in the negative-control "
-            f"`frequent_relabel` regime is **{neg_R[0]:.2f}** (close to the healthy R̂≈1), while in the "
-            f"positive `rare_relabel` regime it drops to **{pos_R[0]:.2f}** — clearly closer to the "
-            f"vanishing R̂=0 boundary. See [figs/Fig3.png](figs/Fig3.png), left panel: the violin for "
-            f"`rare_relabel` sits well below `frequent_relabel`, exactly as the spec predicts "
-            f"(\"R̂ should be near-healthy under frequent relabeling, degrade as P_relabel grows\")."
+            f"For the `{headline_capacity}` slice, mean R̂ in `frequent_relabel` is **{neg_R[0]:.2f}** "
+            f"and mean R̂ in the positive relabel-stress slice is **{pos_R[0]:.2f}**. Interpret this "
+            f"only after checking Table 2: `frequent_relabel` is a valid negative control only if its "
+            f"`frac turned over` is near zero."
         )
 
     # Honest characterization of why Table 1 is empty on smoke data
@@ -427,10 +454,9 @@ def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[
 
     md = f"""# Results — performative-gradient diagnostic on B-Pref / PEBBLE (scaled sibling)
 
-> Generated by `perf_diag.analysis`. This is the **smoke pilot** report: 1 task,
-> {len(cfg.get("seeds", []))} seeds, {len(cfg.get("regimes", []))} regimes, reduced horizon.
-> Sample sizes are small by design; CIs are wide; the harness is the deliverable. Re-run
-> the same CLI with full flags to populate the headline study.
+> Generated by `perf_diag.analysis`. This report groups runs by task, RM capacity, and
+> relabel-frequency regime. The default submission is a 2×2 stress matrix:
+> `full_rm/small_rm × rare_relabel/frequent_relabel`.
 
 ## Motivation
 
@@ -462,11 +488,12 @@ Why a gold-free signal matters: in real RLHF you only have the proxy. A signal c
   with B-Pref's irrationality knobs. We add `perf_diag/` around the existing repo and a single
   ~5-line patch in `train_PEBBLE.py` that installs our hooks when `PD_ENABLE=1`.
 - **Tasks**: {", ".join(cfg.get("tasks", []))}.
+- **RM capacities**: {", ".join(cfg.get("capacities", []))}.
 - **Seeds**: {", ".join(str(s) for s in cfg.get("seeds", []))}.
 - **Regimes** (sweep over `cfg.num_interact` = the relabel period `P_relabel`):
   {", ".join(cfg.get("regimes", []))}.
-- **Probe knobs** (env vars `PD_*`): N_probe=4 segments, segment length 50, refit_pairs=12,
-  K_refit=5, refit_lr=3e-4, monitoring cadence = every relabel.
+- **Probe knobs** (env vars `PD_*`): see `perf_diag/submit.sh`; current runs record
+  relabel-triggered probes and, when enabled, step-cadence probes after relabeling stops.
 - **Baselines** (all gold-free): proxy-inflection (second derivative of smoothed proxy),
   KL(π_θ ‖ π_pretrain), policy entropy drop, ensemble predictive variance (N=5 RM ensemble).
 
@@ -532,21 +559,17 @@ Negative-control validation on the real runs: **{"OK" if nc.get("ok") else "FAIL
 
 {R_staleness_tracking if R_staleness_tracking else "_Insufficient data: R̂ track per regime not measurable._"}
 
-This is the **mechanism check** the spec asks for in Part 3 ("the probe's qualitative behavior
-matches its meaning"). It says: where staleness is small (frequent relabel), R̂ is healthy; as
-staleness grows (rare relabel), R̂ degrades. That holds in our smoke data even with only ~4–6
-probe rounds per run, which is a much smaller sample than the spec recommends.
+This is the mechanism check: within a fixed RM capacity, rare relabeling should make fresh
+on-policy refits change the policy-gradient direction more strongly than frequent relabeling.
+Capacity-limited runs are a stress/specificity check; if `small_rm/frequent_relabel` turns over,
+it is not a valid negative control for matched-FAR.
 
 ### What the smoke pilot does NOT measure
 
-The matched-FAR comparison (the spec's Part 2 headline test) needs **many** probe rounds per
-run to populate the (FAR, lead) curve. In this pilot each run produced only ~{median_probes}
-probe rows because the smoke's short horizon + tight `max_feedback` saturates the preference
-buffer after a handful of relabels. With only ~4–6 rows per run, there is essentially no room
-for a "lead time" measurement: by the time you have enough data to fire the CUSUM rule, the
-horizon is over. **That is why Table 1 below is empty.** It is not a falsification of the
-detector claim — it is a statement that the smoke is too short to test it. The full study
-flags below give the curves the room they need.
+The matched-FAR comparison needs enough probe rounds after the policy starts exploiting the RM.
+Median probe rows here: ~{median_probes}. If Table 1 has `n_neg=0`, or Table 2 shows the supposed
+negative-control slice turning over, FAR is undefined for that slice and the lead comparison
+should not be used as a headline claim.
 
 ### Figures
 
@@ -559,21 +582,17 @@ Fig 3 is the spec's "probe stability" figure: left panel shows the R̂ distribut
 are positive-regime runs, dashed are negative controls. The solid lines sit below the dashed
 lines, which is exactly what the theory predicts.
 
-### Table 1 — lead@FAR=0.1 per signal × task (95% bootstrap CI)
+### Table 1 — lead@FAR=0.1 per signal × task × capacity (95% bootstrap CI)
 
 {chr(10).join(t1_lines)}
 
-(Empty by smoke-data constraints, see above.)
-
-### Table 2 — Regime summary
+### Table 2 — Capacity × regime summary
 
 {chr(10).join(t2_lines)}
 
 Note the `frac_turned_over` column is a heuristic on the EMA-smoothed gold curve with
-`min_drop_frac = 0.05`. On the smoke's short and noisy traces it fires inconsistently
-(both regimes show some apparent in-horizon dip). The much more reliable smoke signal is
-the **mean R̂** column on the right: 1.51 for the negative control, 0.59 for the positive —
-clean, monotone, and matches the theory.
+`min_drop_frac = 0.05`. A matched-FAR row is interpretable only when the corresponding
+`frequent_relabel` negative-control slice has near-zero turnover.
 
 ### Was over-optimization observed?
 
@@ -585,18 +604,11 @@ clean, monotone, and matches the theory.
 
 ### Honest scoreboard
 
-This pilot is the **harness**, not the headline. Across {len(manifest['runs'])} smoke runs
-({len(cfg.get('seeds', []))} seeds × {len(cfg.get('regimes', []))} regimes × {len(cfg.get('tasks', []))} task),
-the lead@FAR=0.1 CIs in Table 1 are empty / wide enough that the comparison between `R̂` and
-the baselines is **not yet statistically resolved**. To rigorously test the claim — "`R̂`
-gives lead time competitive with or better than the gold-free baselines at matched FAR" —
-re-run with the full flags:
-
-```
-PYTHONPATH=. python -m perf_diag.run \\
-    --tasks metaworld_drawer-open-v2 metaworld_door-close-v2 walker_walk \\
-    --seeds 0 1 2 3 4 5 6 7
-```
+Across {len(manifest['runs'])} runs, the headline claim is resolved only for slices with
+both positive and valid negative-control runs. The 2×2 capacity matrix should be read as:
+`full_rm/frequent_relabel` is the clean negative control; `full_rm/rare_relabel` isolates
+staleness; `small_rm/frequent_relabel` tests capacity-only misspecification; and
+`small_rm/rare_relabel` is the strongest stress condition.
 
 We expect, at full scale:
 - positives over-optimize: smoothed gold turns over while smoothed proxy continues to rise;
@@ -627,6 +639,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", default=None,
                         help="Filter manifest to a single task; results.md/Figs/Tables go to --out_dir")
+    parser.add_argument("--capacity", default=None,
+                        help="Filter manifest to a single RM-capacity slice, e.g. full_rm or small_rm")
     parser.add_argument("--out_dir", default=None,
                         help="Override output directory. Defaults to perf_diag/ for combined runs, "
                              "perf_diag/per_env/<task>/ when --task is set.")
@@ -636,8 +650,12 @@ def main(argv=None) -> int:
     global FIGS_DIR, TABLES_DIR, RESULTS_MD_PATH
     if args.out_dir:
         out_root = args.out_dir
+    elif args.task and args.capacity:
+        out_root = os.path.join(_THIS, "per_cell", args.task.replace("/", "_"), args.capacity)
     elif args.task:
         out_root = os.path.join(_THIS, "per_env", args.task.replace("/", "_"))
+    elif args.capacity:
+        out_root = os.path.join(_THIS, "per_capacity", args.capacity)
     else:
         out_root = _THIS
     FIGS_DIR = os.path.join(out_root, "figs")
@@ -651,17 +669,25 @@ def main(argv=None) -> int:
         print("[analysis] no runs in manifest — did you run perf_diag.run first?")
         return 1
 
-    # Apply task filter if requested
-    if args.task:
-        runs_filtered = [r for r in manifest["runs"] if r.get("task") == args.task]
+    # Apply filters if requested
+    if args.task or args.capacity:
+        runs_filtered = [
+            r for r in manifest["runs"]
+            if (args.task is None or r.get("task") == args.task)
+            and (args.capacity is None or run_capacity(r) == args.capacity)
+        ]
         if not runs_filtered:
-            print(f"[analysis] no runs matching task={args.task!r} (available tasks: "
-                  f"{sorted({r.get('task') for r in manifest['runs']})})")
+            print(f"[analysis] no runs matching task={args.task!r}, capacity={args.capacity!r} "
+                  f"(available tasks: {sorted({r.get('task') for r in manifest['runs']})}; "
+                  f"capacities: {sorted({run_capacity(r) for r in manifest['runs']})})")
             return 1
         manifest = {**manifest, "runs": runs_filtered,
-                    "config": {**manifest.get("config", {}), "tasks": [args.task]}}
+                    "config": {**manifest.get("config", {}),
+                               "tasks": [args.task] if args.task else sorted({r.get("task") for r in runs_filtered}),
+                               "capacities": [args.capacity] if args.capacity else sorted({run_capacity(r) for r in runs_filtered})}}
     print(f"[analysis] {len(manifest['runs'])} runs in manifest "
-          f"(task filter: {args.task or '<none, combined>'})  out_dir={out_root}")
+          f"(task filter: {args.task or '<none>'}, capacity filter: {args.capacity or '<none>'})  "
+          f"out_dir={out_root}")
 
     fig1_path = fig1(manifest)
     print(f"[analysis] Fig1 -> {fig1_path}")
