@@ -1,0 +1,6 @@
+task,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+metaworld_button-press-v2,R_hat,48,48,48,1,0
+metaworld_button-press-v2,proxy_inflection,48,48,48,1,0
+metaworld_button-press-v2,kl_to_pretrain,47,47,47,1,0
+metaworld_button-press-v2,entropy_drop,48,48,48,1,0
+metaworld_button-press-v2,ensemble_var,44,44,44,1,0

@@ -1,0 +1,6 @@
+task,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+metaworld_hammer-v2,R_hat,74.7,68,81,12,6
+metaworld_hammer-v2,proxy_inflection,21.8,13,58,12,6
+metaworld_hammer-v2,kl_to_pretrain,84.4,81,94,12,6
+metaworld_hammer-v2,entropy_drop,18.9,11,28.7,12,6
+metaworld_hammer-v2,ensemble_var,11.9,10,17,12,6

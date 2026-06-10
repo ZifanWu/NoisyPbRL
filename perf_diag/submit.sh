@@ -64,7 +64,7 @@ PD_REFIT_LR="${PD_REFIT_LR:-0.0003}"
 PD_PROBE_M="${PD_PROBE_M:-1}"
 
 # Filters (space-separated; empty = use defaults)
-ENVS="${ENVS:-metaworld_drawer-open-v2 metaworld_door-close-v2 walker_walk}"
+ENVS="${ENVS:-walker_walk}"
 SEEDS="${SEEDS:-0 1 2 3 4 5}"
 REGIMES="${REGIMES:-rare_relabel med_relabel frequent_relabel}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
@@ -238,7 +238,7 @@ for task in envs:
                 f"max_feedback={max_feedback}",
                 f"reward_update={reward_update}",
                 f"use_wandb={use_wandb}",
-                "log_save_tb=true",
+                "log_save_tb=false",
                 "save_video=false",
                 "gpu=0",
                 f"hydra.run.dir={run_dir}",

@@ -1,0 +1,6 @@
+task,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+metaworld_door-open-v2,R_hat,0,0,0,1,0
+metaworld_door-open-v2,proxy_inflection,0,0,0,1,0
+metaworld_door-open-v2,kl_to_pretrain,nan,nan,nan,1,0
+metaworld_door-open-v2,entropy_drop,0,0,0,1,0
+metaworld_door-open-v2,ensemble_var,nan,nan,nan,1,0

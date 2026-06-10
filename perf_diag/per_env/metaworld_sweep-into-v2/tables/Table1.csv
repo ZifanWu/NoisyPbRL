@@ -1,0 +1,6 @@
+task,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+metaworld_sweep-into-v2,R_hat,7.4,6,9,3,0
+metaworld_sweep-into-v2,proxy_inflection,6.97,4,8.84,3,0
+metaworld_sweep-into-v2,kl_to_pretrain,7.68,6,8.84,3,0
+metaworld_sweep-into-v2,entropy_drop,6.49,5.48,8,3,0
+metaworld_sweep-into-v2,ensemble_var,6.68,5,8,3,0

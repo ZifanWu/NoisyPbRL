@@ -1,0 +1,6 @@
+task,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+walker_walk,R_hat,6.98,7,7,11,6
+walker_walk,proxy_inflection,9.37,3,12,11,6
+walker_walk,kl_to_pretrain,6.12,2,11,11,6
+walker_walk,entropy_drop,5.96,4.91,9,11,6
+walker_walk,ensemble_var,7,7,7,11,6

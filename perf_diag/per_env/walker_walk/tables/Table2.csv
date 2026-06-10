@@ -1,0 +1,4 @@
+regime,n_runs,frac_turned_over,mean_kappa,mean_R_inner
+frequent_relabel,6,1,2.23,0.877
+med_relabel,6,0.667,2.47,1.03
+rare_relabel,6,0.5,2.28,1.01

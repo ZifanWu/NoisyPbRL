@@ -1,0 +1,6 @@
+task,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+metaworld_drawer-open-v2,R_hat,20.7,14.3,24,7,0
+metaworld_drawer-open-v2,proxy_inflection,21,14.9,23.8,7,0
+metaworld_drawer-open-v2,kl_to_pretrain,23.5,20,26,7,0
+metaworld_drawer-open-v2,entropy_drop,18.8,13.8,23,7,0
+metaworld_drawer-open-v2,ensemble_var,17.9,13.4,22.3,7,0
