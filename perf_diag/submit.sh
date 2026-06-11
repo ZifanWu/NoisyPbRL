@@ -40,6 +40,7 @@ DRY_RUN="${DRY_RUN:-false}"
 RUN_TRAIN="${RUN_TRAIN:-true}"
 RUN_ANALYSIS="${RUN_ANALYSIS:-true}"
 DEPENDENCY_TYPE="${DEPENDENCY_TYPE:-afterany}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_${RANDOM}}"
 # Default false: clean reports should only aggregate this submission. Set
 # MERGE_PREVIOUS=true only when intentionally combining old JSONLs.
 MERGE_PREVIOUS="${MERGE_PREVIOUS:-false}"
@@ -130,8 +131,9 @@ PD_OUT_DIR="${PD_OUT_DIR:-$SCRIPT_DIR/perf_diag/runs}"
 MANIFEST_DIR="$RESULTS_DIR/manifests"
 mkdir -p "$MANIFEST_DIR" "$LOG_DIR" "$PD_OUT_DIR"
 
-TRAIN_MANIFEST_JSON="$MANIFEST_DIR/perf_diag_train.json"
-TRAIN_MANIFEST_CSV="$MANIFEST_DIR/perf_diag_train.csv"
+TRAIN_MANIFEST_JSON="$MANIFEST_DIR/perf_diag_train_${RUN_ID}.json"
+TRAIN_MANIFEST_CSV="$MANIFEST_DIR/perf_diag_train_${RUN_ID}.csv"
+REPORT_DIR="${REPORT_DIR:-$SCRIPT_DIR/perf_diag/reports/$RUN_ID}"
 
 # ==============================================================
 # Build the per-cell training manifest.
@@ -607,7 +609,7 @@ print(f"wrote {manifest_path}: {len(runs)} runs total "
 PY
 
 echo "=== perf_diag analysis: combined report ==="
-"__PYTHON__" -m perf_diag.analysis
+"__PYTHON__" -m perf_diag.analysis --out_dir "__REPORT_DIR__"
 
 # Per-cell reports: one results.md / Figs / Tables per task × capacity.
 mapfile -t TASK_CAPS < <("__PYTHON__" - "__PD_OUT_DIR__/_manifest.json" <<'PY'
@@ -622,7 +624,11 @@ for TASK_CAP in "${TASK_CAPS[@]}"; do
     IFS=$'\t' read -r TASK CAPACITY <<< "$TASK_CAP"
     echo ""
     echo "=== perf_diag analysis: per-cell report for ${TASK} / ${CAPACITY} ==="
-    "__PYTHON__" -m perf_diag.analysis --task "${TASK}" --capacity "${CAPACITY}"
+    SAFE_TASK="${TASK//\//_}"
+    "__PYTHON__" -m perf_diag.analysis \
+        --task "${TASK}" \
+        --capacity "${CAPACITY}" \
+        --out_dir "__REPORT_DIR__/per_cell/${SAFE_TASK}/${CAPACITY}"
 done
 EOT
 
@@ -657,6 +663,7 @@ for script in "$TMP_TRAIN_SCRIPT" "$TMP_ANALYSIS_SCRIPT"; do
     python_replace "$script" "__PYTHON__" "$PYTHON"
     python_replace "$script" "__PD_OUT_DIR__" "$PD_OUT_DIR"
     python_replace "$script" "__TRAIN_MANIFEST_JSON__" "$TRAIN_MANIFEST_JSON"
+    python_replace "$script" "__REPORT_DIR__" "$REPORT_DIR"
     python_replace "$script" "__SKIP_DONE__" "$SKIP_DONE"
     python_replace "$script" "__MIN_DONE_ROWS__" "$MIN_DONE_ROWS"
     python_replace "$script" "__MERGE_PREVIOUS__" "$MERGE_PREVIOUS"
@@ -678,7 +685,9 @@ echo "  python           : $PYTHON"
 echo "  results dir      : $RESULTS_DIR"
 echo "  PD out dir       : $PD_OUT_DIR"
 echo "  log dir          : $LOG_DIR"
+echo "  run id           : $RUN_ID"
 echo "  train manifest   : $TRAIN_MANIFEST_JSON"
+echo "  report dir       : $REPORT_DIR"
 echo "  run train        : $RUN_TRAIN"
 echo "  run analysis     : $RUN_ANALYSIS"
 echo "  merge previous   : $MERGE_PREVIOUS  (combined report scans all $PD_OUT_DIR/*.jsonl)"
