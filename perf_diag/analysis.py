@@ -348,11 +348,14 @@ def table1(manifest: dict, target_far: float = 0.1) -> tuple[str, list[dict]]:
 
 
 def table2(manifest: dict) -> tuple[str, list[dict]]:
-    """Capacity × relabel-regime summary."""
+    """Task × capacity × relabel-regime summary."""
     rows = []
-    groups = sorted({(run_capacity(r), r["regime"]) for r in manifest["runs"]})
-    for capacity, regime in groups:
-        runs = [r for r in manifest["runs"] if run_capacity(r) == capacity and r["regime"] == regime]
+    groups = sorted({(r["task"], run_capacity(r), r["regime"]) for r in manifest["runs"]})
+    for task, capacity, regime in groups:
+        runs = [
+            r for r in manifest["runs"]
+            if r["task"] == task and run_capacity(r) == capacity and r["regime"] == regime
+        ]
         traces = [trace_arrays(load_trace(r["jsonl"])) for r in runs]
         gold_turnovers = []
         turnover_reasons = defaultdict(int)
@@ -378,6 +381,7 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
             if "R_inner" in tr and tr["R_inner"].size:
                 R_inners.append(np.nanmean(tr["R_inner"]))
         rows.append(dict(
+            task=task,
             capacity=capacity,
             regime=regime,
             is_capacity_limited=bool(runs[0].get("is_capacity_limited", capacity not in {"full_rm", "default_rm"})) if runs else False,
@@ -391,10 +395,10 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
     p = os.path.join(TABLES_DIR, "Table2.csv")
     with open(p, "w", newline="") as f:
         wr = csv.writer(f)
-        wr.writerow(["capacity", "regime", "is_positive", "is_capacity_limited", "n_runs",
+        wr.writerow(["task", "capacity", "regime", "is_positive", "is_capacity_limited", "n_runs",
                      "frac_turned_over", "turnover_reasons", "mean_kappa", "mean_R_inner"])
         for r in rows:
-            wr.writerow([r["capacity"], r["regime"], r["is_positive"], r["is_capacity_limited"], r["n_runs"],
+            wr.writerow([r["task"], r["capacity"], r["regime"], r["is_positive"], r["is_capacity_limited"], r["n_runs"],
                          f"{r['frac_turned_over']:.3g}",
                          r["turnover_reasons"],
                          f"{r['mean_kappa']:.3g}",
@@ -423,13 +427,13 @@ def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[
             f"[{r['ci_lo']:.3g}, {r['ci_hi']:.3g}] | {r['n_pos']} | {r['n_neg']} |"
         )
     t2_lines = [
-        "| capacity | regime | role | n_runs | frac turned over | turnover reasons | mean κ̂ | mean R̂ |",
-        "|---|---|---|---|---|---|---|---|",
+        "| task | capacity | regime | role | n_runs | frac turned over | turnover reasons | mean κ̂ | mean R̂ |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in table2_rows:
         role = "positive" if r.get("is_positive") else "negative-control"
         t2_lines.append(
-            f"| {r['capacity']} | {r['regime']} | {role} | {r['n_runs']} | {r['frac_turned_over']:.3g} | "
+            f"| {r['task']} | {r['capacity']} | {r['regime']} | {role} | {r['n_runs']} | {r['frac_turned_over']:.3g} | "
             f"{r['turnover_reasons']} | "
             f"{r['mean_kappa']:.3g} | {r['mean_R_inner']:.3g} |"
         )
@@ -603,7 +607,7 @@ lines, which is exactly what the theory predicts.
 
 {chr(10).join(t1_lines)}
 
-### Table 2 — Capacity × regime summary
+### Table 2 — Task × capacity × regime summary
 
 {chr(10).join(t2_lines)}
 
