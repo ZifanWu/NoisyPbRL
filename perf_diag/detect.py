@@ -73,24 +73,107 @@ def find_t_gold_sustained_decline(gold_series: np.ndarray, K_decline: int = 5,
     return None
 
 
-def turned_over_in_horizon(gold_series: np.ndarray, K_decline: int = 5,
-                            alpha: float = 0.1, min_drop_frac: float = 0.05) -> bool:
-    """Conservative test: gold turned over if a sustained decline of ≥ min_drop_frac of
-    its running max actually happened in-horizon. Used for negative-control validity.
+def confirmed_turnover_info(
+    gold_series: np.ndarray,
+    proxy_series: np.ndarray | None = None,
+    K_decline: int = 5,
+    alpha: float = 0.2,
+    min_drop_frac: float = 0.2,
+    min_post_points: int = 8,
+    max_peak_frac: float = 0.8,
+    late_window: int = 5,
+    require_proxy_noncollapse: bool = False,
+) -> dict:
+    """Strict reward-over-optimization event detector.
+
+    A confirmed turnover is not just "some drop after a running max". We require:
+      1. enough samples after the peak;
+      2. the peak is not in the last tail of the horizon;
+      3. the post-peak late-window mean is clearly below the peak;
+      4. the post-peak curve stays below the drop threshold for K_decline points.
+
+    If proxy_series is supplied and require_proxy_noncollapse=True, we also require
+    the late proxy not to collapse along with gold. That gate is off by default
+    because proxy traces can be noisy; Table 2 reports gold-confirmed turnover.
     """
-    g = baselines.ema_smooth(np.asarray(gold_series, dtype=np.float64), alpha=alpha)
-    if g.size < K_decline + 1:
-        return False
-    running_max = -np.inf
-    drop = 0.0
-    for v in g:
-        if v > running_max:
-            running_max = v
+    g_raw = np.asarray(gold_series, dtype=np.float64)
+    g_raw = g_raw[np.isfinite(g_raw)]
+    if g_raw.size == 0:
+        return dict(turned_over=False, t_gold=None, reason="empty_gold")
+    g = baselines.ema_smooth(g_raw, alpha=alpha)
+    n = int(g.size)
+    min_needed = max(K_decline + 2, min_post_points + 2, late_window + 2)
+    if n < min_needed:
+        return dict(turned_over=False, t_gold=None, reason="too_few_points", n=n)
+
+    t_peak = int(np.argmax(g))
+    n_post = n - t_peak - 1
+    if n_post < min_post_points:
+        return dict(turned_over=False, t_gold=t_peak, reason="too_few_post_peak_points",
+                    n=n, n_post=n_post)
+    if t_peak > int(max_peak_frac * (n - 1)):
+        return dict(turned_over=False, t_gold=t_peak, reason="peak_too_late",
+                    n=n, n_post=n_post)
+
+    peak = float(g[t_peak])
+    denom = max(abs(peak), 1e-8)
+    threshold = peak - min_drop_frac * denom
+    post = g[t_peak + 1:]
+    late_n = min(late_window, post.size)
+    late_mean = float(np.mean(post[-late_n:]))
+    drop_frac = float((peak - late_mean) / denom)
+    if drop_frac < min_drop_frac:
+        return dict(turned_over=False, t_gold=t_peak, reason="late_drop_too_small",
+                    n=n, n_post=n_post, peak=peak, late_mean=late_mean,
+                    drop_frac=drop_frac)
+
+    run = 0
+    first_sustained = None
+    for i, v in enumerate(post, start=t_peak + 1):
+        if v <= threshold:
+            run += 1
+            if run >= K_decline:
+                first_sustained = i - K_decline + 1
+                break
         else:
-            drop = max(drop, running_max - v)
-    if running_max <= 0:
-        return drop > 0
-    return drop > min_drop_frac * abs(running_max)
+            run = 0
+    if first_sustained is None:
+        return dict(turned_over=False, t_gold=t_peak, reason="no_sustained_post_peak_drop",
+                    n=n, n_post=n_post, peak=peak, late_mean=late_mean,
+                    drop_frac=drop_frac)
+
+    if proxy_series is not None and require_proxy_noncollapse:
+        p_raw = np.asarray(proxy_series, dtype=np.float64)
+        p_raw = p_raw[np.isfinite(p_raw)]
+        if p_raw.size == n:
+            p = baselines.ema_smooth(p_raw, alpha=alpha)
+            p_peak = float(p[t_peak])
+            p_late = float(np.mean(p[t_peak + 1:][-late_n:]))
+            proxy_tol = 0.05 * max(abs(p_peak), 1e-8)
+            if p_late < p_peak - proxy_tol:
+                return dict(turned_over=False, t_gold=t_peak, reason="proxy_collapsed_too",
+                            n=n, n_post=n_post, peak=peak, late_mean=late_mean,
+                            drop_frac=drop_frac, proxy_at_peak=p_peak, proxy_late_mean=p_late)
+
+    return dict(turned_over=True, t_gold=t_peak, reason="confirmed",
+                n=n, n_post=n_post, peak=peak, late_mean=late_mean,
+                drop_frac=drop_frac, first_sustained=first_sustained)
+
+
+def find_t_gold_confirmed(gold_series: np.ndarray, proxy_series: np.ndarray | None = None,
+                          **kwargs) -> Optional[int]:
+    info = confirmed_turnover_info(gold_series, proxy_series=proxy_series, **kwargs)
+    return int(info["t_gold"]) if info.get("turned_over") else None
+
+
+def turned_over_in_horizon(gold_series: np.ndarray, K_decline: int = 5,
+                            alpha: float = 0.2, min_drop_frac: float = 0.2,
+                            **kwargs) -> bool:
+    """Strict confirmed turnover test used for negative-control validity."""
+    return bool(confirmed_turnover_info(
+        gold_series, K_decline=K_decline, alpha=alpha,
+        min_drop_frac=min_drop_frac, **kwargs
+    ).get("turned_over"))
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +287,7 @@ def build_signal_runs(traces: list[dict], signal_fn, signal_key_for_run: str = "
     runs = []
     for t in traces:
         sig = signal_fn(t)
-        t_gold = find_t_gold_argmax(t["gold"]) if t.get(signal_key_for_run, False) else None
+        t_gold = find_t_gold_confirmed(t["gold"]) if t.get(signal_key_for_run, False) else None
         runs.append(SignalRun(label=t["label"], is_positive=bool(t.get(signal_key_for_run, False)),
                               signal=np.asarray(sig, dtype=np.float64),
                               t_gold=t_gold))

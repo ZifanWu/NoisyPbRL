@@ -130,7 +130,7 @@ def fig1(manifest: dict, threshold_for_R: float = 0.5) -> str | None:
         gold = arr.get("gold_eval", np.array([]))
         if gold.size < 3:
             continue
-        t_gold = detect.find_t_gold_argmax(gold) if gold.size >= 3 else None
+        t_gold = detect.find_t_gold_confirmed(gold, arr.get("proxy_mean"))
         sig = baselines.R_degradation_signal(arr.get("R_inner", np.array([])))
         t_fire = detect.cusum_fire(sig, threshold_for_R, K_persist=2)
         lead = (t_gold - t_fire) if (t_fire is not None and t_gold is not None and t_fire <= t_gold) else 0
@@ -153,7 +153,8 @@ def fig1(manifest: dict, threshold_for_R: float = 0.5) -> str | None:
     axes[0].plot(x, gold_smooth, "g-", lw=2, label="gold (smoothed)")
     ax2 = axes[0].twinx()
     ax2.plot(x, proxy_smooth, "b--", lw=2, label="proxy (smoothed)")
-    axes[0].axvline(t_gold, color="g", ls=":", alpha=0.6, label=f"t_gold={t_gold}")
+    if t_gold is not None:
+        axes[0].axvline(t_gold, color="g", ls=":", alpha=0.6, label=f"t_gold={t_gold}")
     if t_fire is not None:
         axes[0].axvline(t_fire, color="r", ls=":", alpha=0.6, label=f"t_fire(R̂)={t_fire}")
     axes[0].set_ylabel("gold return", color="g")
@@ -211,7 +212,9 @@ def _make_signal_runs_for_group(manifest: dict, task: str, capacity: str, signal
         if not tr or tr.get("gold_eval", np.array([])).size < 5:
             continue
         sig = SIGNAL_FNS[signal_name](tr)
-        t_gold = detect.find_t_gold_argmax(tr["gold_eval"]) if r["is_positive"] else None
+        t_gold = detect.find_t_gold_confirmed(
+            tr["gold_eval"], tr.get("proxy_mean", None)
+        ) if r["is_positive"] else None
         runs.append(detect.SignalRun(label=r["run_name"], is_positive=bool(r["is_positive"]),
                                      signal=sig, t_gold=t_gold))
     return runs
@@ -352,13 +355,24 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
         runs = [r for r in manifest["runs"] if run_capacity(r) == capacity and r["regime"] == regime]
         traces = [trace_arrays(load_trace(r["jsonl"])) for r in runs]
         gold_turnovers = []
+        turnover_reasons = defaultdict(int)
         kappas = []
         R_inners = []
         for tr in traces:
             if "gold_eval" not in tr:
                 continue
-            gold_turnovers.append(detect.turned_over_in_horizon(tr["gold_eval"], K_decline=3,
-                                                                 alpha=0.3, min_drop_frac=0.05))
+            info = detect.confirmed_turnover_info(
+                tr["gold_eval"],
+                proxy_series=tr.get("proxy_mean", None),
+                K_decline=5,
+                alpha=0.2,
+                min_drop_frac=0.2,
+                min_post_points=8,
+                max_peak_frac=0.8,
+                late_window=5,
+            )
+            gold_turnovers.append(bool(info.get("turned_over")))
+            turnover_reasons[str(info.get("reason", "unknown"))] += 1
             if "kappa" in tr and tr["kappa"].size:
                 kappas.append(np.nanmean(tr["kappa"]))
             if "R_inner" in tr and tr["R_inner"].size:
@@ -370,6 +384,7 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
             is_positive=bool(runs[0].get("is_positive", regime not in {"frequent_relabel", "ultra_frequent_relabel"})) if runs else False,
             n_runs=len(runs),
             frac_turned_over=float(np.mean(gold_turnovers)) if gold_turnovers else float("nan"),
+            turnover_reasons=";".join(f"{k}:{v}" for k, v in sorted(turnover_reasons.items())),
             mean_kappa=float(np.mean(kappas)) if kappas else float("nan"),
             mean_R_inner=float(np.mean(R_inners)) if R_inners else float("nan"),
         ))
@@ -377,10 +392,11 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
     with open(p, "w", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(["capacity", "regime", "is_positive", "is_capacity_limited", "n_runs",
-                     "frac_turned_over", "mean_kappa", "mean_R_inner"])
+                     "frac_turned_over", "turnover_reasons", "mean_kappa", "mean_R_inner"])
         for r in rows:
             wr.writerow([r["capacity"], r["regime"], r["is_positive"], r["is_capacity_limited"], r["n_runs"],
                          f"{r['frac_turned_over']:.3g}",
+                         r["turnover_reasons"],
                          f"{r['mean_kappa']:.3g}",
                          f"{r['mean_R_inner']:.3g}"])
     return p, rows
@@ -407,13 +423,14 @@ def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[
             f"[{r['ci_lo']:.3g}, {r['ci_hi']:.3g}] | {r['n_pos']} | {r['n_neg']} |"
         )
     t2_lines = [
-        "| capacity | regime | role | n_runs | frac turned over | mean κ̂ | mean R̂ |",
-        "|---|---|---|---|---|---|---|",
+        "| capacity | regime | role | n_runs | frac turned over | turnover reasons | mean κ̂ | mean R̂ |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in table2_rows:
         role = "positive" if r.get("is_positive") else "negative-control"
         t2_lines.append(
             f"| {r['capacity']} | {r['regime']} | {role} | {r['n_runs']} | {r['frac_turned_over']:.3g} | "
+            f"{r['turnover_reasons']} | "
             f"{r['mean_kappa']:.3g} | {r['mean_R_inner']:.3g} |"
         )
 
@@ -590,9 +607,11 @@ lines, which is exactly what the theory predicts.
 
 {chr(10).join(t2_lines)}
 
-Note the `frac_turned_over` column is a heuristic on the EMA-smoothed gold curve with
-`min_drop_frac = 0.05`. A matched-FAR row is interpretable only when the corresponding
-`frequent_relabel` negative-control slice has near-zero turnover.
+Note the `frac_turned_over` column uses the strict confirmed-turnover rule: EMA-smoothed
+gold must peak before the final 20% of the trace, have at least 8 post-peak probe points,
+and the late-window mean must drop by at least 20% below the peak with a sustained
+post-peak decline. A matched-FAR row is interpretable only when the corresponding
+negative-control slice has near-zero turnover.
 
 ### Was over-optimization observed?
 

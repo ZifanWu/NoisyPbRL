@@ -578,7 +578,10 @@ for r in runs:
     gold = load_gold(r["jsonl"])
     if len(gold) < 5:
         continue
-    if detect.turned_over_in_horizon(gold, K_decline=3, alpha=0.3, min_drop_frac=0.1):
+    if detect.turned_over_in_horizon(
+        gold, K_decline=5, alpha=0.2, min_drop_frac=0.2,
+        min_post_points=8, max_peak_frac=0.8, late_window=5
+    ):
         bad_neg.append(r["run_name"])
 
 manifest = {

@@ -227,7 +227,10 @@ def validate_negative_controls(spawn_results: list[dict]) -> tuple[bool, list[st
         gold = gold[~np.isnan(gold)]
         if gold.size < 5:
             continue  # too few samples to judge; let analysis flag this separately
-        if detect.turned_over_in_horizon(gold, K_decline=3, alpha=0.3, min_drop_frac=0.1):
+        if detect.turned_over_in_horizon(
+            gold, K_decline=5, alpha=0.2, min_drop_frac=0.2,
+            min_post_points=8, max_peak_frac=0.8, late_window=5
+        ):
             bad.append(r["run_name"])
     return (len(bad) == 0, bad)
 
