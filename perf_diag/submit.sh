@@ -64,8 +64,11 @@ NUM_UNSUP_STEPS="${NUM_UNSUP_STEPS:-9000}"
 EVAL_FREQUENCY="${EVAL_FREQUENCY:-10000}"
 SEGMENT="${SEGMENT:-50}"
 ENSEMBLE_SIZE="${ENSEMBLE_SIZE:-5}"
-TEACHER_EPS_MISTAKE="${TEACHER_EPS_MISTAKE:-0.1}"
-TEACHER_BETA="${TEACHER_BETA:--1}"
+# Noisy teacher: Bradley-Terry stochastic preference (β=1), no uniform mistake flips.
+# Matches scripts/<env>/<budget>/noisy/run_PEBBLE.sh. Switch back via TEACHER_BETA=-1 TEACHER_EPS_MISTAKE=0.1
+# to use the "mistake" (rational + uniform-flip) teacher.
+TEACHER_EPS_MISTAKE="${TEACHER_EPS_MISTAKE:-0}"
+TEACHER_BETA="${TEACHER_BETA:-1}"
 REWARD_UPDATE="${REWARD_UPDATE:-200}"
 
 # Probe knobs (env vars consumed inside train_PEBBLE.py via perf_diag.hooks)
@@ -220,6 +223,8 @@ def capacity_cfgs(names):
     presets = {
         "full_rm": dict(capacity="full_rm", rm_hidden_dim=256, rm_num_layers=3,
                         rm_output_activation="tanh", is_capacity_limited=False),
+        "mid_rm": dict(capacity="mid_rm", rm_hidden_dim=64, rm_num_layers=2,
+                       rm_output_activation="tanh", is_capacity_limited=True),
         "small_rm": dict(capacity="small_rm", rm_hidden_dim=16, rm_num_layers=1,
                          rm_output_activation="tanh", is_capacity_limited=True),
         "linear_rm": dict(capacity="linear_rm", rm_hidden_dim=0, rm_num_layers=0,

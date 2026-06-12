@@ -197,6 +197,8 @@ class RewardModel:
         return torch.from_numpy(flat[idxs]).float().to(device)
 
     def log_dormant_neurons(self):
+        # Disabled: not used by perf_diag experiment. Re-enable by removing this early-return.
+        return
         if not self.use_wandb:
             return
         import wandb
@@ -342,6 +344,8 @@ class RewardModel:
         )
 
     def log_batch_bt_and_grad_norm(self):
+        # Disabled: not used by perf_diag experiment. Re-enable by removing this early-return.
+        return
         if not self.use_wandb:
             return
         import wandb
@@ -387,6 +391,8 @@ class RewardModel:
         self.opt.zero_grad()
 
     def log_buffer_bt_metrics(self, step):
+        # Disabled: not used by perf_diag experiment. Re-enable by removing this early-return.
+        return
         if not self.use_wandb:
             return
         import wandb
@@ -402,16 +408,7 @@ class RewardModel:
                              title_desc='full preference buffer')
 
     def flush_weight_update_ratios(self, step):
-        if self.use_wandb:
-            import wandb
-            if wandb.run is not None:
-                log_data = {}
-                for layer_name in ['penultimate', 'final']:
-                    ratios = self._weight_update_ratios[layer_name]
-                    if ratios:
-                        log_data[f'reward_model/weight_update_ratio_{layer_name}'] = float(np.median(ratios))
-                if log_data:
-                    wandb.log(log_data, step=step)
+        # Disabled: not used by perf_diag experiment. Reset state only.
         self._weight_update_ratios = {'penultimate': [], 'final': []}
 
     def pre_relabel_logging(self, step):
@@ -1023,30 +1020,8 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
-            # Architecture-aware Linear-layer snapshots: linear_rm has only a single Linear,
-            # so [-4] (penultimate) doesn't exist. Discover the Linear indices dynamically.
-            if self.use_wandb:
-                seq_len = len(self.ensemble[0])
-                linear_neg_idxs = [i - seq_len for i, m in enumerate(self.ensemble[0])
-                                   if isinstance(m, nn.Linear)]
-                layers_to_log = []
-                if len(linear_neg_idxs) >= 2:
-                    layers_to_log.append(('penultimate', linear_neg_idxs[-2]))
-                if len(linear_neg_idxs) >= 1:
-                    layers_to_log.append(('final', linear_neg_idxs[-1]))
-                old_weights = {
-                    name: [self.ensemble[m][idx].weight.data.clone() for m in range(self.de)]
-                    for name, idx in layers_to_log
-                }
             loss.backward()
             self.opt.step()
-            if self.use_wandb:
-                for member in range(self.de):
-                    for layer_name, idx in layers_to_log:
-                        old_w = old_weights[layer_name][member]
-                        new_w = self.ensemble[member][idx].weight.data
-                        ratio = ((new_w - old_w).norm('fro') / (old_w.norm('fro') + 1e-8)).item()
-                        self._weight_update_ratios[layer_name].append(ratio)
             self.reward_grad_steps += 1
             if self.reward_grad_steps % self.dormant_log_period == 0:
                 self.log_dormant_neurons()
@@ -1113,30 +1088,8 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
-            # Architecture-aware Linear-layer snapshots: linear_rm has only a single Linear,
-            # so [-4] (penultimate) doesn't exist. Discover the Linear indices dynamically.
-            if self.use_wandb:
-                seq_len = len(self.ensemble[0])
-                linear_neg_idxs = [i - seq_len for i, m in enumerate(self.ensemble[0])
-                                   if isinstance(m, nn.Linear)]
-                layers_to_log = []
-                if len(linear_neg_idxs) >= 2:
-                    layers_to_log.append(('penultimate', linear_neg_idxs[-2]))
-                if len(linear_neg_idxs) >= 1:
-                    layers_to_log.append(('final', linear_neg_idxs[-1]))
-                old_weights = {
-                    name: [self.ensemble[m][idx].weight.data.clone() for m in range(self.de)]
-                    for name, idx in layers_to_log
-                }
             loss.backward()
             self.opt.step()
-            if self.use_wandb:
-                for member in range(self.de):
-                    for layer_name, idx in layers_to_log:
-                        old_w = old_weights[layer_name][member]
-                        new_w = self.ensemble[member][idx].weight.data
-                        ratio = ((new_w - old_w).norm('fro') / (old_w.norm('fro') + 1e-8)).item()
-                        self._weight_update_ratios[layer_name].append(ratio)
             self.reward_grad_steps += 1
             if self.reward_grad_steps % self.dormant_log_period == 0:
                 self.log_dormant_neurons()

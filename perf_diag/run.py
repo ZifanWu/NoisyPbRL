@@ -35,8 +35,10 @@ os.makedirs(RUNS_DIR, exist_ok=True)
 
 
 # RM capacity configs: (rm_hidden_dim, rm_num_layers, rm_output_activation)
+# Parameter counts (approx, on a 90-dim input): full ≈200K, mid ≈10K, small ≈1K, linear ≈100.
 CAPACITY_CONFIGS = {
     "full_rm":  dict(rm_hidden_dim=256, rm_num_layers=3, rm_output_activation="tanh"),
+    "mid_rm":   dict(rm_hidden_dim=64,  rm_num_layers=2, rm_output_activation="tanh"),
     "small_rm": dict(rm_hidden_dim=16,  rm_num_layers=1, rm_output_activation="tanh"),
 }
 
@@ -70,8 +72,8 @@ class SmokeConfig:
     segment: int = 50
     eval_frequency: int = 5000
     ensemble_size: int = 5               # spec requires N=5 for the ensemble-var baseline
-    teacher_eps_mistake: float = 0.1     # mild label noise so the data loop matters
-    teacher_beta: int = -1               # rational+noise teacher (mistake ε only)
+    teacher_eps_mistake: float = 0       # noisy teacher: no uniform mistake flips
+    teacher_beta: int = 1                # noisy teacher: BT stochastic preference (β=1)
     max_feedback: int = 700
     reward_update: int = 50
     # Unlimited budget: when True, override TASK_DEFAULTS' max_feedback with UNLIMITED_BUDGET_VAL
