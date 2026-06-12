@@ -34,6 +34,19 @@ RUNS_DIR = os.path.join(_THIS, "runs")
 os.makedirs(RUNS_DIR, exist_ok=True)
 
 
+# RM capacity configs: (rm_hidden_dim, rm_num_layers, rm_output_activation)
+CAPACITY_CONFIGS = {
+    "full_rm":  dict(rm_hidden_dim=256, rm_num_layers=3, rm_output_activation="tanh"),
+    "small_rm": dict(rm_hidden_dim=16,  rm_num_layers=1, rm_output_activation="tanh"),
+}
+
+# Sentinel max_feedback used when unlimited_budget=True. Sized to be "effectively unlimited"
+# for our sweep configs (frequent_relabel at 1M steps needs ≤50K labels) but bounded so the
+# RewardModel buffer fits in memory: capacity = max_feedback × large_batch (=10).
+# At 100K × 10 × segment=50 × (ds+da)=90 × 4B ≈ 18 GB buffer.
+UNLIMITED_BUDGET_VAL = 100_000
+
+
 # ---------------------------------------------------------------------------
 @dataclass
 class RegimeCfg:
@@ -61,6 +74,12 @@ class SmokeConfig:
     teacher_beta: int = -1               # rational+noise teacher (mistake ε only)
     max_feedback: int = 700
     reward_update: int = 50
+    # Unlimited budget: when True, override TASK_DEFAULTS' max_feedback with UNLIMITED_BUDGET_VAL
+    # to isolate the relabeling-frequency effect from preference-budget exhaustion.
+    # Each regime gets a continuous stream of fresh on-policy preferences regardless of P_relabel.
+    unlimited_budget: bool = True
+    # capacity sweep
+    capacities: tuple = ("full_rm", "small_rm")
     # probe knobs
     PD_N_PROBE: int = 4
     PD_SEGMENT_LEN: int = 50
@@ -68,18 +87,25 @@ class SmokeConfig:
     PD_K_REFIT: int = 5
     PD_REFIT_LR: float = 3e-4
     PD_PROBE_M: int = 1                  # probe every relabel
+    PD_STEP_PROBE_EVERY: int = 10000     # step-cadence probe after budget exhaustion; 0 disables
 
 
 # Per-task budgets, taken from the repo's authored scripts (scripts/<env>/<feedback>/oracle/run_PEBBLE.sh)
-# so the full study uses the same scale the authors validated. Values are (max_feedback, central P_relabel).
+# so the full study uses the same scale the authors validated. Values are (max_feedback, central P_relabel, reward_update).
 # Central P_relabel is what the regime sweep is built around: positive = ~2x central, negative = ~0.2x central.
+# reward_update is the number of RM training epochs per relabel; the original scripts use 10 for MetaWorld and 50 for DMC.
+# The repo's config default is 200 but it's always overridden in the run scripts — we replicate the per-env scripts here.
 TASK_DEFAULTS = {
-    "metaworld_drawer-open-v2":  dict(max_feedback=10000, central_P=10000),
-    "metaworld_door-close-v2":   dict(max_feedback=1000,  central_P=10000),
-    "metaworld_button-press-v2": dict(max_feedback=20000, central_P=5000),
-    "metaworld_hammer-v2":       dict(max_feedback=20000, central_P=5000),
-    "walker_walk":               dict(max_feedback=1000,  central_P=20000),
-    "quadruped_walk":            dict(max_feedback=2000,  central_P=20000),
+    "metaworld_drawer-open-v2":  dict(max_feedback=10000, central_P=10000, reward_update=10),
+    "metaworld_door-close-v2":   dict(max_feedback=1000,  central_P=10000, reward_update=10),
+    "metaworld_door-open-v2":    dict(max_feedback=4000,  central_P=10000, reward_update=10),
+    "metaworld_door-unlock-v2":  dict(max_feedback=5000,  central_P=10000, reward_update=10),
+    "metaworld_button-press-v2": dict(max_feedback=20000, central_P=5000,  reward_update=10),
+    "metaworld_hammer-v2":       dict(max_feedback=20000, central_P=5000,  reward_update=10),
+    "metaworld_sweep-into-v2":   dict(max_feedback=20000, central_P=5000,  reward_update=10),
+    "metaworld_window-close-v2": dict(max_feedback=500,   central_P=10000, reward_update=10),
+    "walker_walk":               dict(max_feedback=1000,  central_P=20000, reward_update=50),
+    "quadruped_walk":            dict(max_feedback=2000,  central_P=20000, reward_update=50),
 }
 
 
@@ -88,7 +114,10 @@ def task_overrides(task: str) -> dict:
     d = TASK_DEFAULTS.get(task)
     if not d:
         return {}
-    return {"max_feedback": d["max_feedback"]}
+    out = {"max_feedback": d["max_feedback"]}
+    if "reward_update" in d:
+        out["reward_update"] = d["reward_update"]
+    return out
 
 
 def task_central_P(task: str, fallback: int = 10000) -> int:
@@ -109,7 +138,7 @@ class FullConfig(SmokeConfig):
     regimes: tuple = (
         RegimeCfg(name="placeholder", num_interact=10000, is_positive=True),
     )
-    num_train_steps: int = 500_000
+    num_train_steps: int = 1_000_000
     num_seed_steps: int = 1000
     num_unsup_steps: int = 9000           # matches the authors' validated default (was 5000)
     max_feedback: int = 1400              # OVERRIDDEN per-task via TASK_DEFAULTS
@@ -130,19 +159,20 @@ def build_regimes_for_task(cfg, task: str) -> list[RegimeCfg]:
     ]
 
 
-def _run_name(task: str, regime: str, seed: int) -> str:
-    return f"{task.replace('/', '_')}__{regime}__seed{seed}"
+def _run_name(task: str, regime: str, seed: int, capacity: str = "full_rm") -> str:
+    return f"{task.replace('/', '_')}__{regime}__{capacity}__seed{seed}"
 
 
-def _spawn_one(cfg, task: str, regime: RegimeCfg, seed: int, log_dir: str) -> dict:
+def _spawn_one(cfg, task: str, regime: RegimeCfg, seed: int, log_dir: str,
+               capacity: str = "full_rm") -> dict:
     """Spawn a single PEBBLE run as a subprocess and wait."""
-    run_name = _run_name(task, regime.name, seed)
+    run_name = _run_name(task, regime.name, seed, capacity)
     jsonl_path = os.path.join(RUNS_DIR, f"{run_name}.jsonl")
     if os.path.exists(jsonl_path):
         # Skip already-completed runs (cheap restart). Comment out to force redo.
         return dict(run_name=run_name, status="skipped",
                     jsonl=jsonl_path, regime=regime.name, task=task, seed=seed,
-                    is_positive=regime.is_positive)
+                    capacity=capacity, is_positive=regime.is_positive)
 
     env = os.environ.copy()
     env["PD_ENABLE"] = "1"
@@ -154,14 +184,21 @@ def _spawn_one(cfg, task: str, regime: RegimeCfg, seed: int, log_dir: str) -> di
     env["PD_K_REFIT"] = str(cfg.PD_K_REFIT)
     env["PD_REFIT_LR"] = str(cfg.PD_REFIT_LR)
     env["PD_PROBE_M"] = str(cfg.PD_PROBE_M)
+    env["PD_STEP_PROBE_EVERY"] = str(cfg.PD_STEP_PROBE_EVERY)
     env["PD_OUT_DIR"] = RUNS_DIR
     # Some Hydra/MuJoCo combos need these
     env.setdefault("MUJOCO_GL", "egl")
     env.setdefault("PYTHONPATH", _REPO)
 
-    # Per-task overrides (max_feedback etc.) take precedence over the global cfg defaults.
+    # Per-task overrides (max_feedback, reward_update) take precedence over the global cfg defaults.
     per_task = task_overrides(task)
     max_feedback = per_task.get("max_feedback", cfg.max_feedback)
+    reward_update = per_task.get("reward_update", cfg.reward_update)
+    # Unlimited budget: override max_feedback so the regime sweep measures the pure
+    # effect of relabeling frequency (each regime keeps getting fresh labels).
+    if getattr(cfg, "unlimited_budget", False):
+        max_feedback = UNLIMITED_BUDGET_VAL
+    cap_cfg = CAPACITY_CONFIGS.get(capacity, CAPACITY_CONFIGS["full_rm"])
     overrides = [
         f"env={task}",
         f"seed={seed}",
@@ -175,7 +212,11 @@ def _spawn_one(cfg, task: str, regime: RegimeCfg, seed: int, log_dir: str) -> di
         f"teacher_eps_mistake={cfg.teacher_eps_mistake}",
         f"teacher_beta={cfg.teacher_beta}",
         f"max_feedback={max_feedback}",
-        f"reward_update={cfg.reward_update}",
+        f"reward_update={reward_update}",
+        f"rm_hidden_dim={cap_cfg['rm_hidden_dim']}",
+        f"rm_num_layers={cap_cfg['rm_num_layers']}",
+        f"rm_output_activation={cap_cfg['rm_output_activation']}",
+        "keep_relabeling_after_budget=true",
         "log_save_tb=true",
         "use_wandb=false",
         "save_video=false",
@@ -195,7 +236,7 @@ def _spawn_one(cfg, task: str, regime: RegimeCfg, seed: int, log_dir: str) -> di
     print(f"  {run_name}: {status} in {wall:.1f}s")
     return dict(run_name=run_name, status=status,
                 jsonl=jsonl_path, regime=regime.name, task=task, seed=seed,
-                is_positive=regime.is_positive, wall=wall,
+                capacity=capacity, is_positive=regime.is_positive, wall=wall,
                 stdout=stdout_path, stderr=stderr_path)
 
 
@@ -265,30 +306,35 @@ def main(argv=None) -> int:
     # 2. Spawn runs
     log_dir = os.path.join(_THIS, "runs", "_logs")
     os.makedirs(log_dir, exist_ok=True)
-    print(f">>> SPAWNING RUNS  ({len(cfg.tasks)} tasks × {len(cfg.regimes)} regimes × {len(cfg.seeds)} seeds = "
-          f"{len(cfg.tasks) * len(cfg.regimes) * len(cfg.seeds)} runs)")
+    capacities = list(cfg.capacities)
+    n_regimes = len(cfg.regimes)  # approximate; FullConfig overrides per task
+    print(f">>> SPAWNING RUNS  ({len(cfg.tasks)} tasks × {n_regimes} regimes × "
+          f"{len(capacities)} capacities × {len(cfg.seeds)} seeds = "
+          f"~{len(cfg.tasks) * n_regimes * len(capacities) * len(cfg.seeds)} runs)")
     spawn_results = []
     if not args.skip_pebble:
         t0 = time.time()
         for task in cfg.tasks:
             regimes_for_task = build_regimes_for_task(cfg, task)
             for regime in regimes_for_task:
-                for seed in cfg.seeds:
-                    spawn_results.append(_spawn_one(cfg, task, regime, seed, log_dir))
+                for capacity in capacities:
+                    for seed in cfg.seeds:
+                        spawn_results.append(_spawn_one(cfg, task, regime, seed, log_dir, capacity))
         print(f">>> ALL RUNS DONE in {time.time() - t0:.1f}s\n")
     else:
         # Reconstruct results dict from existing JSONL files
         for task in cfg.tasks:
             regimes_for_task = build_regimes_for_task(cfg, task)
             for regime in regimes_for_task:
-                for seed in cfg.seeds:
-                    name = _run_name(task, regime.name, seed)
-                    spawn_results.append(dict(
-                        run_name=name, status="reused",
-                        jsonl=os.path.join(RUNS_DIR, f"{name}.jsonl"),
-                        regime=regime.name, task=task, seed=seed,
-                        is_positive=regime.is_positive,
-                    ))
+                for capacity in capacities:
+                    for seed in cfg.seeds:
+                        name = _run_name(task, regime.name, seed, capacity)
+                        spawn_results.append(dict(
+                            run_name=name, status="reused",
+                            jsonl=os.path.join(RUNS_DIR, f"{name}.jsonl"),
+                            regime=regime.name, task=task, seed=seed,
+                            capacity=capacity, is_positive=regime.is_positive,
+                        ))
 
     # 3. Validate negative controls
     print(">>> NEGATIVE-CONTROL VALIDATION (spec §8 #5)")
@@ -310,7 +356,8 @@ def main(argv=None) -> int:
                    "config": dict(quick=args.quick,
                                   tasks=list(cfg.tasks),
                                   seeds=list(cfg.seeds),
-                                  regimes=regime_names_seen),
+                                  regimes=regime_names_seen,
+                                  capacities=capacities),
                    "neg_control_validity": dict(ok=ok, bad=bad)},
                   f, indent=2)
     print(f"manifest at: {manifest_path}")

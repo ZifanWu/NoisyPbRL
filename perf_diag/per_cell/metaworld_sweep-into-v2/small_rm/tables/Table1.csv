@@ -1,0 +1,7 @@
+task,capacity,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+metaworld_sweep-into-v2,small_rm,R_hat,9.25,9,10,2,2
+metaworld_sweep-into-v2,small_rm,kappa,9.24,9,10,2,2
+metaworld_sweep-into-v2,small_rm,proxy_inflection,22,22,22,2,2
+metaworld_sweep-into-v2,small_rm,kl_to_pretrain,30,30,30,2,2
+metaworld_sweep-into-v2,small_rm,entropy_drop,26,26,26,2,2
+metaworld_sweep-into-v2,small_rm,ensemble_var,31,31,31,2,2

@@ -1023,17 +1023,27 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
+            # Architecture-aware Linear-layer snapshots: linear_rm has only a single Linear,
+            # so [-4] (penultimate) doesn't exist. Discover the Linear indices dynamically.
             if self.use_wandb:
-                old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
-                old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
+                seq_len = len(self.ensemble[0])
+                linear_neg_idxs = [i - seq_len for i, m in enumerate(self.ensemble[0])
+                                   if isinstance(m, nn.Linear)]
+                layers_to_log = []
+                if len(linear_neg_idxs) >= 2:
+                    layers_to_log.append(('penultimate', linear_neg_idxs[-2]))
+                if len(linear_neg_idxs) >= 1:
+                    layers_to_log.append(('final', linear_neg_idxs[-1]))
+                old_weights = {
+                    name: [self.ensemble[m][idx].weight.data.clone() for m in range(self.de)]
+                    for name, idx in layers_to_log
+                }
             loss.backward()
             self.opt.step()
             if self.use_wandb:
                 for member in range(self.de):
-                    for layer_name, old_w, idx in [
-                        ('penultimate', old_penultimate[member], -4),
-                        ('final', old_final[member], -2),
-                    ]:
+                    for layer_name, idx in layers_to_log:
+                        old_w = old_weights[layer_name][member]
                         new_w = self.ensemble[member][idx].weight.data
                         ratio = ((new_w - old_w).norm('fro') / (old_w.norm('fro') + 1e-8)).item()
                         self._weight_update_ratios[layer_name].append(ratio)
@@ -1103,17 +1113,27 @@ class RewardModel:
                 correct = (predicted == labels).sum().item()
                 ensemble_acc[member] += correct
                 
+            # Architecture-aware Linear-layer snapshots: linear_rm has only a single Linear,
+            # so [-4] (penultimate) doesn't exist. Discover the Linear indices dynamically.
             if self.use_wandb:
-                old_penultimate = [self.ensemble[m][-4].weight.data.clone() for m in range(self.de)]
-                old_final = [self.ensemble[m][-2].weight.data.clone() for m in range(self.de)]
+                seq_len = len(self.ensemble[0])
+                linear_neg_idxs = [i - seq_len for i, m in enumerate(self.ensemble[0])
+                                   if isinstance(m, nn.Linear)]
+                layers_to_log = []
+                if len(linear_neg_idxs) >= 2:
+                    layers_to_log.append(('penultimate', linear_neg_idxs[-2]))
+                if len(linear_neg_idxs) >= 1:
+                    layers_to_log.append(('final', linear_neg_idxs[-1]))
+                old_weights = {
+                    name: [self.ensemble[m][idx].weight.data.clone() for m in range(self.de)]
+                    for name, idx in layers_to_log
+                }
             loss.backward()
             self.opt.step()
             if self.use_wandb:
                 for member in range(self.de):
-                    for layer_name, old_w, idx in [
-                        ('penultimate', old_penultimate[member], -4),
-                        ('final', old_final[member], -2),
-                    ]:
+                    for layer_name, idx in layers_to_log:
+                        old_w = old_weights[layer_name][member]
                         new_w = self.ensemble[member][idx].weight.data
                         ratio = ((new_w - old_w).norm('fro') / (old_w.norm('fro') + 1e-8)).item()
                         self._weight_update_ratios[layer_name].append(ratio)

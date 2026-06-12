@@ -102,16 +102,23 @@ def confirmed_turnover_info(
         return dict(turned_over=False, t_gold=None, reason="empty_gold")
     g = baselines.ema_smooth(g_raw, alpha=alpha)
     n = int(g.size)
-    min_needed = max(K_decline + 2, min_post_points + 2, late_window + 2)
+
+    # Adapt absolute thresholds to trace length so short traces (~50 probes for
+    # rare_relabel) are not penalized vs long traces (~170 probes for frequent_relabel).
+    effective_min_post = min(min_post_points, max(3, int(0.07 * n)))
+    effective_max_peak_frac = max(max_peak_frac, 1.0 - float(effective_min_post) / max(n - 1, 1))
+    effective_K_decline = min(K_decline, effective_min_post)
+
+    min_needed = max(effective_K_decline + 2, effective_min_post + 2, late_window + 2)
     if n < min_needed:
         return dict(turned_over=False, t_gold=None, reason="too_few_points", n=n)
 
     t_peak = int(np.argmax(g))
     n_post = n - t_peak - 1
-    if n_post < min_post_points:
+    if n_post < effective_min_post:
         return dict(turned_over=False, t_gold=t_peak, reason="too_few_post_peak_points",
                     n=n, n_post=n_post)
-    if t_peak > int(max_peak_frac * (n - 1)):
+    if t_peak > int(effective_max_peak_frac * (n - 1)):
         return dict(turned_over=False, t_gold=t_peak, reason="peak_too_late",
                     n=n, n_post=n_post)
 
@@ -132,8 +139,8 @@ def confirmed_turnover_info(
     for i, v in enumerate(post, start=t_peak + 1):
         if v <= threshold:
             run += 1
-            if run >= K_decline:
-                first_sustained = i - K_decline + 1
+            if run >= effective_K_decline:
+                first_sustained = i - effective_K_decline + 1
                 break
         else:
             run = 0
@@ -142,22 +149,32 @@ def confirmed_turnover_info(
                     n=n, n_post=n_post, peak=peak, late_mean=late_mean,
                     drop_frac=drop_frac)
 
-    if proxy_series is not None and require_proxy_noncollapse:
+    # Always compute proxy trend when available — used to distinguish Goodhart
+    # (proxy↑ while gold↓) from training instability (both collapse together).
+    goodhart_confirmed = None   # None = proxy data unavailable or length mismatch
+    proxy_at_peak = float("nan")
+    proxy_late_mean = float("nan")
+    if proxy_series is not None:
         p_raw = np.asarray(proxy_series, dtype=np.float64)
         p_raw = p_raw[np.isfinite(p_raw)]
         if p_raw.size == n:
             p = baselines.ema_smooth(p_raw, alpha=alpha)
-            p_peak = float(p[t_peak])
-            p_late = float(np.mean(p[t_peak + 1:][-late_n:]))
-            proxy_tol = 0.05 * max(abs(p_peak), 1e-8)
-            if p_late < p_peak - proxy_tol:
+            proxy_at_peak = float(p[t_peak])
+            proxy_late_mean = float(np.mean(p[t_peak + 1:][-late_n:]))
+            proxy_tol = 0.05 * max(abs(proxy_at_peak), 1e-8)
+            # Goodhart: proxy did NOT collapse alongside gold (stayed ≥ peak - 5%)
+            goodhart_confirmed = bool(proxy_late_mean >= proxy_at_peak - proxy_tol)
+            if require_proxy_noncollapse and not goodhart_confirmed:
                 return dict(turned_over=False, t_gold=t_peak, reason="proxy_collapsed_too",
                             n=n, n_post=n_post, peak=peak, late_mean=late_mean,
-                            drop_frac=drop_frac, proxy_at_peak=p_peak, proxy_late_mean=p_late)
+                            drop_frac=drop_frac, proxy_at_peak=proxy_at_peak,
+                            proxy_late_mean=proxy_late_mean, goodhart_confirmed=False)
 
     return dict(turned_over=True, t_gold=t_peak, reason="confirmed",
                 n=n, n_post=n_post, peak=peak, late_mean=late_mean,
-                drop_frac=drop_frac, first_sustained=first_sustained)
+                drop_frac=drop_frac, first_sustained=first_sustained,
+                goodhart_confirmed=goodhart_confirmed,
+                proxy_at_peak=proxy_at_peak, proxy_late_mean=proxy_late_mean)
 
 
 def find_t_gold_confirmed(gold_series: np.ndarray, proxy_series: np.ndarray | None = None,

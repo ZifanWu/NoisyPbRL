@@ -173,11 +173,14 @@ def _refit_psi_prime(ensemble_src, refit_pairs_inputs, refit_pairs_labels, K_ref
 
 
 def _build_refit_pairs(probe_batch: dict, reward_model, refit_pairs: int,
-                       rng: np.random.Generator) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray]:
+                       rng: np.random.Generator) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray, bool]:
     """Build a fresh preference batch from the on-policy probe segments.
 
     Pairs are sampled with replacement from the N_probe segments. The scripted teacher
     in reward_model.get_label is used for labels (the same teacher that drives training).
+
+    Returns (inputs, labels, fallback_used) where fallback_used=True if the teacher
+    skipped all pairs and we fell back to rational labels.
     """
     N = probe_batch["obs"].shape[0]
     L = probe_batch["obs"].shape[1]
@@ -189,12 +192,14 @@ def _build_refit_pairs(probe_batch: dict, reward_model, refit_pairs: int,
     r_t_2 = probe_batch["gold"][idx2].reshape(refit_pairs, L, 1).astype(np.float32)
     # Reuse the live teacher; it consumes gold returns and emits noisy BT labels
     sa_t_1, sa_t_2, r_t_1, r_t_2, labels = reward_model.get_label(sa_t_1, sa_t_2, r_t_1, r_t_2)
+    fallback_used = False
     if labels is None or len(labels) == 0:
         # fall back to perfectly-rational labels on the same pairs if the teacher skipped all
+        fallback_used = True
         labels = (r_t_1.sum(1).reshape(-1) < r_t_2.sum(1).reshape(-1)).astype(np.int64)
         sa_t_1 = np.concatenate([probe_batch["obs"][idx1], probe_batch["action"][idx1]], axis=-1).astype(np.float32)
         sa_t_2 = np.concatenate([probe_batch["obs"][idx2], probe_batch["action"][idx2]], axis=-1).astype(np.float32)
-    return (sa_t_1, sa_t_2), np.asarray(labels).astype(np.int64)
+    return (sa_t_1, sa_t_2), np.asarray(labels).astype(np.int64), fallback_used
 
 
 def run_probe(actor, reward_model, env_factory,
@@ -208,21 +213,23 @@ def run_probe(actor, reward_model, env_factory,
     if isinstance(device, str):
         device = torch.device(device)
     rng = np.random.default_rng(probe_seed)
-    # Seed torch RNG so dist.sample() in the rollout, deep-copies' Adam init, and
-    # ψ' SGD trajectory are all reproducible across reruns at the same probe_seed.
+    # Seed both torch and legacy numpy RNGs so the rollout, Adam init, ψ' SGD, and
+    # get_label() (which uses np.random.rand) are all reproducible at a given probe_seed.
     torch.manual_seed(int(probe_seed) & 0x7FFFFFFF)
+    np.random.seed(int(probe_seed) & 0x7FFFFFFF)
 
     # ---- 1. fresh probe batch ------------------------------------------------
     batch = _rollout_probe_segments(env_factory, actor, n_probe, segment_len, device)
 
     # ---- 2. g0 under current RM ---------------------------------------------
+    actor_was_training = actor.training
     actor.train()
     g0, proxy_mean_t, proxy_std_t = _reinforce_probe_gradient(
         actor, reward_model.ensemble, batch, device, centered=True
     )
 
     # ---- 3. ψ' refit --------------------------------------------------------
-    refit_inputs, refit_labels = _build_refit_pairs(batch, reward_model, refit_pairs, rng)
+    refit_inputs, refit_labels, refit_label_fallback = _build_refit_pairs(batch, reward_model, refit_pairs, rng)
     ensemble_p = _refit_psi_prime(
         reward_model.ensemble, refit_inputs, refit_labels, K_refit, refit_lr, device
     )
@@ -255,6 +262,9 @@ def run_probe(actor, reward_model, env_factory,
         member_r = np.stack(member_r, axis=0)
         ens_var = float(member_r.var(axis=0).mean())
 
+    # Restore actor training mode so the live training loop is unaffected
+    actor.train(actor_was_training)
+
     # cleanup ψ' (free GPU mem)
     for m in ensemble_p:
         for p in m.parameters():
@@ -277,4 +287,5 @@ def run_probe(actor, reward_model, env_factory,
         segment_len=int(segment_len),
         refit_pairs=int(refit_pairs),
         K_refit=int(K_refit),
+        refit_label_fallback=bool(refit_label_fallback),
     )

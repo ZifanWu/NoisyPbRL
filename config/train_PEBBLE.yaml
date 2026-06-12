@@ -31,6 +31,11 @@ rm_hidden_dim: 256
 rm_num_layers: 3
 rm_output_activation: tanh
 
+# When true, after max_feedback is exhausted keep retraining the RM on existing
+# preference data and relabeling the replay buffer at the num_interact cadence.
+# Prevents the forced-freeze that makes frequent_relabel an invalid negative control.
+keep_relabeling_after_budget: false
+
 # scheduling
 reward_schedule: 0
 

@@ -1,0 +1,3 @@
+capacity,regime,is_positive,is_capacity_limited,n_runs,frac_turned_over,turnover_reasons,mean_kappa,mean_R_inner
+full_rm,frequent_relabel,False,False,2,1,confirmed:2,1.71,0.222
+full_rm,rare_relabel,True,False,2,1,confirmed:2,1.91,0.449

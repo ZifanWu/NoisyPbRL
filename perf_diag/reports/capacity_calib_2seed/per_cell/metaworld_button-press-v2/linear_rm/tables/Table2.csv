@@ -1,0 +1,3 @@
+capacity,regime,is_positive,is_capacity_limited,n_runs,frac_turned_over,turnover_reasons,mean_kappa,mean_R_inner
+linear_rm,frequent_relabel,False,True,2,0.5,confirmed:1;too_few_post_peak_points:1,0.36,0.939
+linear_rm,rare_relabel,True,True,2,0,too_few_post_peak_points:2,0.412,0.923

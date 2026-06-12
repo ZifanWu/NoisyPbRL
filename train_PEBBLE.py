@@ -292,8 +292,8 @@ class Workspace(object):
                 interact_count = 0
             elif self.step > self.cfg.num_seed_steps + self.cfg.num_unsup_steps:
                 # update reward function
-                if self.total_feedback < self.cfg.max_feedback:
-                    if interact_count == self.cfg.num_interact:
+                if interact_count == self.cfg.num_interact:
+                    if self.total_feedback < self.cfg.max_feedback:
                         # update schedule
                         if self.cfg.reward_schedule == 1:
                             frac = (self.cfg.num_train_steps-self.step) / self.cfg.num_train_steps
@@ -304,22 +304,38 @@ class Workspace(object):
                         else:
                             frac = 1
                         self.reward_model.change_batch(frac)
-                        
+
                         # update margin --> not necessary / will be updated soon
                         new_margin = np.mean(avg_train_true_return) * (self.cfg.segment / self.env._max_episode_steps)
                         self.reward_model.set_teacher_thres_skip(new_margin * self.cfg.teacher_eps_skip)
                         self.reward_model.set_teacher_thres_equal(new_margin * self.cfg.teacher_eps_equal)
-                        
+
                         # corner case: new total feed > max feed
                         if self.reward_model.mb_size + self.total_feedback > self.cfg.max_feedback:
                             self.reward_model.set_batch(self.cfg.max_feedback - self.total_feedback)
-                            
+
                         self.reward_model.env_step = self.step
                         self.learn_reward()
                         self.reward_model.pre_relabel_logging(self.step)
                         self.replay_buffer.relabel_with_predictor(self.reward_model)
-                        interact_count = 0
-                        
+                    elif getattr(self.cfg, 'keep_relabeling_after_budget', False) and self.labeled_feedback > 0:
+                        # Budget exhausted: retrain RM on existing preference data and
+                        # relabel the replay buffer at the same cadence.  This prevents
+                        # the forced-freeze that makes frequent_relabel an invalid
+                        # negative control (proxy keeps rising on a stale RM).
+                        self.reward_model.env_step = self.step
+                        train_acc = 0
+                        for epoch in range(self.cfg.reward_update):
+                            if self.cfg.label_margin > 0 or self.cfg.teacher_eps_equal > 0:
+                                train_acc = self.reward_model.train_soft_reward()
+                            else:
+                                train_acc = self.reward_model.train_reward()
+                            if np.mean(train_acc) > 0.97:
+                                break
+                        self.reward_model.pre_relabel_logging(self.step)
+                        self.replay_buffer.relabel_with_predictor(self.reward_model)
+                    interact_count = 0  # always reset so cadence continues past budget
+
                 self.agent.update(self.replay_buffer, self.logger, self.step, 1)
                 
             # unsupervised exploration

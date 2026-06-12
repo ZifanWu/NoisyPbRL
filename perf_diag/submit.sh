@@ -33,9 +33,21 @@ TIME_LIMIT="${TIME_LIMIT:-12:00:00}"
 ANALYSIS_TIME_LIMIT="${ANALYSIS_TIME_LIMIT:-01:00:00}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 ANALYSIS_CPUS_PER_TASK="${ANALYSIS_CPUS_PER_TASK:-2}"
+# Train-cell memory. With UNLIMITED_BUDGET_VAL=100K + large_batch=10 the RewardModel
+# buffer alone is ~18 GB, so we default to 32 GB. Override for smaller envs if needed.
+TRAIN_MEM="${TRAIN_MEM:-20g}"
 PARTITION="${PARTITION:-dbrown-gpu-np}"
-USE_WANDB="${USE_WANDB:-false}"
+USE_WANDB="${USE_WANDB:-true}"
 SKIP_DONE="${SKIP_DONE:-true}"
+# Unlimited budget: when true (default), override per-task max_feedback with a huge
+# sentinel so the regime sweep measures relabeling frequency in isolation from
+# budget exhaustion. Set to false to use original B-Pref budgets from TASK_DEFAULTS.
+UNLIMITED_BUDGET="${UNLIMITED_BUDGET:-true}"
+# Sentinel max_feedback used when UNLIMITED_BUDGET=true. Sized to be "effectively unlimited"
+# for our sweep configs (frequent_relabel at 1M steps needs ≤50K labels) but bounded so the
+# RewardModel buffer fits in memory: buffer ≈ max_feedback × large_batch × segment × (ds+da) × 4 bytes.
+# At max_feedback=100K, large_batch=10, segment=50, ds+da≈90: ~18 GB. Pair with --mem=32g.
+UNLIMITED_BUDGET_VAL="${UNLIMITED_BUDGET_VAL:-100000}"
 DRY_RUN="${DRY_RUN:-false}"
 RUN_TRAIN="${RUN_TRAIN:-true}"
 RUN_ANALYSIS="${RUN_ANALYSIS:-true}"
@@ -46,7 +58,7 @@ RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_${RANDOM}}"
 MERGE_PREVIOUS="${MERGE_PREVIOUS:-false}"
 
 # Per-cell training budget (matches FullConfig in perf_diag/run.py)
-NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-500000}"
+NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-1000000}"
 NUM_SEED_STEPS="${NUM_SEED_STEPS:-1000}"
 NUM_UNSUP_STEPS="${NUM_UNSUP_STEPS:-9000}"
 EVAL_FREQUENCY="${EVAL_FREQUENCY:-10000}"
@@ -147,7 +159,7 @@ N_TRAIN="$("$PYTHON" - \
     "$NUM_TRAIN_STEPS" "$NUM_SEED_STEPS" "$NUM_UNSUP_STEPS" "$EVAL_FREQUENCY" \
     "$SEGMENT" "$ENSEMBLE_SIZE" "$TEACHER_EPS_MISTAKE" "$TEACHER_BETA" "$REWARD_UPDATE" \
     "$PD_N_PROBE" "$PD_SEGMENT_LEN" "$PD_REFIT_PAIRS" "$PD_K_REFIT" "$PD_REFIT_LR" "$PD_PROBE_M" "$PD_STEP_PROBE_EVERY" \
-    "$TRAIN_MANIFEST_JSON" "$TRAIN_MANIFEST_CSV" <<'PY'
+    "$TRAIN_MANIFEST_JSON" "$TRAIN_MANIFEST_CSV" "$UNLIMITED_BUDGET" "$UNLIMITED_BUDGET_VAL" <<'PY'
 import csv
 import json
 import shlex
@@ -184,6 +196,8 @@ pd_step_probe_every = int(sys.argv[25])
 
 train_manifest_json = Path(sys.argv[26])
 train_manifest_csv = Path(sys.argv[27])
+unlimited_budget = sys.argv[28].lower() in {"1", "true", "yes", "y", "on"}
+unlimited_budget_val = int(sys.argv[29])
 
 sys.path.insert(0, str(repo_dir))
 from perf_diag.run import TASK_DEFAULTS, task_central_P, task_overrides, RegimeCfg
@@ -254,6 +268,14 @@ capacities = capacity_cfgs(capacity_names)
 for task in envs:
     overrides_per_task = task_overrides(task)
     max_feedback = overrides_per_task.get("max_feedback", 1400)
+    if unlimited_budget:
+        # Decouple regime sweep from B-Pref budget exhaustion: each regime keeps
+        # collecting fresh on-policy preferences regardless of P_relabel.
+        max_feedback = unlimited_budget_val
+    # Per-task reward_update takes precedence over the global REWARD_UPDATE env override.
+    # Original MetaWorld scripts use 10, DMC scripts use 50; the YAML default of 200 is
+    # never used by the authored scripts.
+    task_reward_update = overrides_per_task.get("reward_update", reward_update)
     for cap in capacities:
         for regime in regimes_for_task(task):
             for seed in seeds:
@@ -274,10 +296,11 @@ for task in envs:
                     f"teacher_eps_mistake={teacher_eps_mistake}",
                     f"teacher_beta={teacher_beta}",
                     f"max_feedback={max_feedback}",
-                    f"reward_update={reward_update}",
+                    f"reward_update={task_reward_update}",
                     f"rm_hidden_dim={cap['rm_hidden_dim']}",
                     f"rm_num_layers={cap['rm_num_layers']}",
                     f"rm_output_activation={cap['rm_output_activation']}",
+                    "keep_relabeling_after_budget=true",
                     f"use_wandb={use_wandb}",
                     "log_save_tb=false",
                     "save_video=false",
@@ -373,7 +396,7 @@ TMP_ANALYSIS_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${ANALYSIS_JOB_NAME}_XXXXXX")"
 cat > "$TMP_TRAIN_SCRIPT" <<'EOT'
 #!/bin/bash
 #SBATCH --gres=gpu:1
-#SBATCH --mem=20g
+#SBATCH --mem=__TRAIN_MEM__
 #SBATCH --cpus-per-task=__CPUS_PER_TASK__
 #SBATCH --ntasks=1
 #SBATCH --job-name=__TRAIN_JOB_NAME__
@@ -644,8 +667,9 @@ PY
 }
 
 # Skip-done threshold: a run is "complete" if it has at least this many probe rows.
-# Conservative default of 3 catches runs that crashed before/just-after unsup.
-MIN_DONE_ROWS="${MIN_DONE_ROWS:-3}"
+# Raised from 3 to 10: crashed runs often produce 0-2 rows before failure, so 3 was
+# too close to the crash floor — rerun would silently skip those cells.
+MIN_DONE_ROWS="${MIN_DONE_ROWS:-10}"
 
 for script in "$TMP_TRAIN_SCRIPT" "$TMP_ANALYSIS_SCRIPT"; do
     python_replace "$script" "__CPUS_PER_TASK__" "$CPUS_PER_TASK"
@@ -667,6 +691,7 @@ for script in "$TMP_TRAIN_SCRIPT" "$TMP_ANALYSIS_SCRIPT"; do
     python_replace "$script" "__SKIP_DONE__" "$SKIP_DONE"
     python_replace "$script" "__MIN_DONE_ROWS__" "$MIN_DONE_ROWS"
     python_replace "$script" "__MERGE_PREVIOUS__" "$MERGE_PREVIOUS"
+    python_replace "$script" "__TRAIN_MEM__" "$TRAIN_MEM"
     chmod +x "$script"
 done
 
@@ -676,6 +701,7 @@ echo "  seeds            : $SEEDS"
 echo "  capacities       : $CAPACITIES"
 echo "  regimes          : $REGIMES"
 echo "  num_train_steps  : $NUM_TRAIN_STEPS"
+echo "  unlimited_budget : $UNLIMITED_BUDGET  (max_feedback override = $UNLIMITED_BUDGET_VAL when true)"
 echo "  train cells      : $N_TRAIN"
 echo "  train array spec : $TRAIN_ARRAY_SPEC"
 echo "  time limit       : $TIME_LIMIT  (per cell)"

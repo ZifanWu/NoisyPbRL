@@ -146,36 +146,43 @@ def fig1(manifest: dict, threshold_for_R: float = 0.5) -> str | None:
         return None
     r, arr, t_gold, t_fire = best
     fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-    x = np.arange(arr["gold_eval"].size)
+    n_pts = arr["gold_eval"].size
+    x = arr.get("step", np.arange(n_pts))
+    # Align x to gold_eval length in case step array has a different size due to step-probe rows
+    if x.size != n_pts:
+        x = np.arange(n_pts)
     # Top: gold + proxy
     gold_smooth = baselines.ema_smooth(arr["gold_eval"], alpha=0.2)
-    proxy_smooth = baselines.ema_smooth(arr.get("proxy_mean", np.zeros_like(x)), alpha=0.2)
+    proxy_smooth = baselines.ema_smooth(arr.get("proxy_mean", np.zeros(n_pts)), alpha=0.2)
     axes[0].plot(x, gold_smooth, "g-", lw=2, label="gold (smoothed)")
     ax2 = axes[0].twinx()
     ax2.plot(x, proxy_smooth, "b--", lw=2, label="proxy (smoothed)")
     if t_gold is not None:
-        axes[0].axvline(t_gold, color="g", ls=":", alpha=0.6, label=f"t_gold={t_gold}")
+        axes[0].axvline(x[t_gold], color="g", ls=":", alpha=0.6, label=f"t_gold={int(x[t_gold])}")
     if t_fire is not None:
-        axes[0].axvline(t_fire, color="r", ls=":", alpha=0.6, label=f"t_fire(R̂)={t_fire}")
+        axes[0].axvline(x[t_fire], color="r", ls=":", alpha=0.6, label=f"t_fire(R̂)={int(x[t_fire])}")
     axes[0].set_ylabel("gold return", color="g")
     ax2.set_ylabel("proxy mean", color="b")
-    lead_for_title = (t_gold - t_fire) if (t_fire is not None and t_gold is not None and t_fire <= t_gold) else "n/a"
-    axes[0].set_title(f"{r['run_name']} — R̂ lead = {lead_for_title} probe steps")
+    if t_fire is not None and t_gold is not None and t_fire <= t_gold:
+        lead_for_title = f"{int(x[t_gold]) - int(x[t_fire])} env steps"
+    else:
+        lead_for_title = "n/a"
+    axes[0].set_title(f"{r['run_name']} — R̂ lead = {lead_for_title}")
     axes[0].legend(loc="upper left", fontsize=8)
     ax2.legend(loc="upper right", fontsize=8)
     axes[0].grid(alpha=0.3)
 
     # Bottom: R̂_degradation + ensemble_var + kl
-    R_sig = baselines.R_degradation_signal(arr.get("R_inner", np.zeros_like(x)))
+    R_sig = baselines.R_degradation_signal(arr.get("R_inner", np.zeros(n_pts)))
     axes[1].plot(x, R_sig, "r-", lw=2, label="R̂ degradation (= 1 − smooth R̂)")
     axes[1].axhline(threshold_for_R, color="r", ls=":", alpha=0.5,
                     label=f"R̂ fire threshold ({threshold_for_R})")
     ax3 = axes[1].twinx()
-    ax3.plot(x, baselines.ensemble_variance_signal(arr.get("ensemble_variance", np.zeros_like(x))),
+    ax3.plot(x, baselines.ensemble_variance_signal(arr.get("ensemble_variance", np.zeros(n_pts))),
              "purple", lw=1.5, alpha=0.7, label="ensemble var")
-    ax3.plot(x, baselines.kl_to_pretrain_signal(arr.get("kl_to_pretrain", np.zeros_like(x))),
+    ax3.plot(x, baselines.kl_to_pretrain_signal(arr.get("kl_to_pretrain", np.zeros(n_pts))),
              "orange", lw=1.5, alpha=0.7, label="KL to pretrain")
-    axes[1].set_xlabel("monitoring step (relabel index)")
+    axes[1].set_xlabel("env steps")
     axes[1].set_ylabel("R̂ deg.", color="r")
     ax3.set_ylabel("baseline signals", color="purple")
     axes[1].legend(loc="upper left", fontsize=8)
@@ -293,11 +300,14 @@ def fig3(manifest: dict) -> str | None:
         if "R_inner" not in tr or tr["R_inner"].size == 0:
             continue
         sm = baselines.ema_smooth(tr["R_inner"], alpha=0.3)
+        x_steps = tr.get("step", np.arange(sm.size))
+        if x_steps.size != sm.size:
+            x_steps = np.arange(sm.size)
         ls = "-" if r["is_positive"] else "--"
-        axes[1].plot(sm, ls=ls, alpha=0.7, label=r["run_name"][:40])
+        axes[1].plot(x_steps, sm, ls=ls, alpha=0.7, label=r["run_name"][:40])
     axes[1].axhline(1.0, color="g", ls=":", alpha=0.4)
     axes[1].axhline(0.0, color="r", ls=":", alpha=0.4)
-    axes[1].set_xlabel("relabel index"); axes[1].set_ylabel("smoothed R̂")
+    axes[1].set_xlabel("env steps"); axes[1].set_ylabel("smoothed R̂")
     axes[1].set_title("R̂ trajectories (solid = rare/positive, dashed = frequent/neg ctrl)")
     axes[1].legend(fontsize=6, loc="best", ncol=1)
     axes[1].grid(alpha=0.3)
@@ -358,15 +368,17 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
         ]
         traces = [trace_arrays(load_trace(r["jsonl"])) for r in runs]
         gold_turnovers = []
+        goodhart_confirmed_list = []
         turnover_reasons = defaultdict(int)
         kappas = []
         R_inners = []
         for tr in traces:
             if "gold_eval" not in tr:
                 continue
+            proxy = tr.get("proxy_mean", None)
             info = detect.confirmed_turnover_info(
                 tr["gold_eval"],
-                proxy_series=tr.get("proxy_mean", None),
+                proxy_series=proxy,
                 K_decline=5,
                 alpha=0.2,
                 min_drop_frac=0.2,
@@ -374,8 +386,13 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
                 max_peak_frac=0.8,
                 late_window=5,
             )
-            gold_turnovers.append(bool(info.get("turned_over")))
+            turned = bool(info.get("turned_over"))
+            gold_turnovers.append(turned)
             turnover_reasons[str(info.get("reason", "unknown"))] += 1
+            # goodhart_confirmed: proxy stayed up while gold fell
+            gc = info.get("goodhart_confirmed", None)
+            if turned and gc is not None:
+                goodhart_confirmed_list.append(bool(gc))
             if "kappa" in tr and tr["kappa"].size:
                 kappas.append(np.nanmean(tr["kappa"]))
             if "R_inner" in tr and tr["R_inner"].size:
@@ -388,6 +405,7 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
             is_positive=bool(runs[0].get("is_positive", regime not in {"frequent_relabel", "ultra_frequent_relabel"})) if runs else False,
             n_runs=len(runs),
             frac_turned_over=float(np.mean(gold_turnovers)) if gold_turnovers else float("nan"),
+            frac_goodhart=float(np.mean(goodhart_confirmed_list)) if goodhart_confirmed_list else float("nan"),
             turnover_reasons=";".join(f"{k}:{v}" for k, v in sorted(turnover_reasons.items())),
             mean_kappa=float(np.mean(kappas)) if kappas else float("nan"),
             mean_R_inner=float(np.mean(R_inners)) if R_inners else float("nan"),
@@ -396,10 +414,11 @@ def table2(manifest: dict) -> tuple[str, list[dict]]:
     with open(p, "w", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(["task", "capacity", "regime", "is_positive", "is_capacity_limited", "n_runs",
-                     "frac_turned_over", "turnover_reasons", "mean_kappa", "mean_R_inner"])
+                     "frac_turned_over", "frac_goodhart", "turnover_reasons", "mean_kappa", "mean_R_inner"])
         for r in rows:
             wr.writerow([r["task"], r["capacity"], r["regime"], r["is_positive"], r["is_capacity_limited"], r["n_runs"],
                          f"{r['frac_turned_over']:.3g}",
+                         f"{r['frac_goodhart']:.3g}" if not np.isnan(r.get("frac_goodhart", float("nan"))) else "n/a",
                          r["turnover_reasons"],
                          f"{r['mean_kappa']:.3g}",
                          f"{r['mean_R_inner']:.3g}"])
@@ -427,14 +446,16 @@ def write_results_md(manifest: dict, table1_rows: list[dict], table2_rows: list[
             f"[{r['ci_lo']:.3g}, {r['ci_hi']:.3g}] | {r['n_pos']} | {r['n_neg']} |"
         )
     t2_lines = [
-        "| task | capacity | regime | role | n_runs | frac turned over | turnover reasons | mean κ̂ | mean R̂ |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| task | capacity | regime | role | n_runs | frac turned over | frac Goodhart† | turnover reasons | mean κ̂ | mean R̂ |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in table2_rows:
         role = "positive" if r.get("is_positive") else "negative-control"
+        fg = r.get("frac_goodhart", float("nan"))
+        fg_str = f"{fg:.2f}" if not np.isnan(fg) else "n/a"
         t2_lines.append(
             f"| {r['task']} | {r['capacity']} | {r['regime']} | {role} | {r['n_runs']} | {r['frac_turned_over']:.3g} | "
-            f"{r['turnover_reasons']} | "
+            f"{fg_str} | {r['turnover_reasons']} | "
             f"{r['mean_kappa']:.3g} | {r['mean_R_inner']:.3g} |"
         )
 
@@ -616,6 +637,13 @@ gold must peak before the final 20% of the trace, have at least 8 post-peak prob
 and the late-window mean must drop by at least 20% below the peak with a sustained
 post-peak decline. A matched-FAR row is interpretable only when the corresponding
 negative-control slice has near-zero turnover.
+
+† **frac Goodhart** = fraction of turned-over runs where the proxy reward did **not** collapse
+alongside gold (proxy late-mean ≥ proxy at peak − 5%). This distinguishes true Goodhart
+(proxy↑ while gold↓ — the RM is being exploited) from training instability (both proxy and
+gold collapse together — the policy learned a bad strategy unrelated to reward over-optimization).
+A `frac_turned_over > 0` with `frac_goodhart = n/a` or `0.00` means the apparent turnover is
+likely instability, not Goodhart, and cannot be used as evidence of reward over-optimization.
 
 ### Was over-optimization observed?
 

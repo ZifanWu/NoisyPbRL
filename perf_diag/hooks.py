@@ -37,6 +37,7 @@ _CFG_DEFAULTS = dict(
     PD_REFIT_LR="0.0003",
     PD_PROBE_M="1",        # fire every M relabels
     PD_STEP_PROBE_EVERY="0",  # additionally probe every N env steps; 0 disables
+    PD_GOLD_EVAL_EPISODES="3",  # number of episodes to average for gold eval
     PD_OUT_DIR=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"),
     PD_RUN_NAME="default",
     PD_TAG_POSITIVE="positive",   # "positive" or "negative_control"
@@ -219,8 +220,9 @@ class ProbeRecorder:
         self._pretrain_actor_state = _query
 
     def _evaluate_gold_now(self) -> float:
-        """Lightweight gold eval: one episode under the current actor in a fresh env."""
+        """Lightweight gold eval: average over PD_GOLD_EVAL_EPISODES episodes."""
         wp = self.workspace
+        n_eps = int(_cfg("PD_GOLD_EVAL_EPISODES"))
         try:
             if "metaworld" in wp.cfg.env:
                 from utils import make_metaworld_env
@@ -230,29 +232,34 @@ class ProbeRecorder:
                 env = make_env(wp.cfg)
         except Exception:
             return float("nan")
-        obs = env.reset()
-        if isinstance(obs, tuple):
-            obs = obs[0]
-        total = 0.0
-        steps = 0
-        done = False
-        while not done and steps < 1000:
-            with torch.no_grad():
-                o = torch.as_tensor(obs, dtype=torch.float32, device=wp.device).unsqueeze(0)
-                a = wp.agent.actor(o).mean.clamp(-1.0, 1.0).cpu().numpy()[0]
-            step_out = env.step(a)
-            if len(step_out) == 5:
-                obs, r, term, trunc, _ = step_out
-                done = bool(term) or bool(trunc)
-            else:
-                obs, r, done, _ = step_out
-            total += float(r)
-            steps += 1
+        totals = []
         try:
-            env.close()
-        except Exception:
-            pass
-        return total
+            for _ in range(n_eps):
+                obs = env.reset()
+                if isinstance(obs, tuple):
+                    obs = obs[0]
+                total = 0.0
+                steps = 0
+                done = False
+                while not done and steps < 1000:
+                    with torch.no_grad():
+                        o = torch.as_tensor(obs, dtype=torch.float32, device=wp.device).unsqueeze(0)
+                        a = wp.agent.actor(o).mean.clamp(-1.0, 1.0).cpu().numpy()[0]
+                    step_out = env.step(a)
+                    if len(step_out) == 5:
+                        obs, r, term, trunc, _ = step_out
+                        done = bool(term) or bool(trunc)
+                    else:
+                        obs, r, done, _ = step_out
+                    total += float(r)
+                    steps += 1
+                totals.append(total)
+        finally:
+            try:
+                env.close()
+            except Exception:
+                pass
+        return float(np.mean(totals)) if totals else float("nan")
 
     def _on_relabel(self):
         wp = self.workspace
@@ -353,6 +360,9 @@ class ProbeRecorder:
 
 def install_hooks(workspace) -> ProbeRecorder:
     """Install the GoldIsolationGuard and ProbeRecorder on a Workspace instance."""
+    if getattr(workspace, "_perf_diag_installed", False):
+        return workspace._perf_diag_recorder  # idempotent: don't double-wrap
     GoldIsolationGuard(workspace).install()
     recorder = ProbeRecorder(workspace)
+    workspace._perf_diag_installed = True
     return recorder
