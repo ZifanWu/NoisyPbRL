@@ -343,19 +343,29 @@ class ProbeRecorder:
         with open(self.path, "a") as f:
             f.write(json.dumps(row) + "\n")
         self._last_probe_step = int(wp.step)
-        # Also push to the existing tb/wandb logger for live visibility.
-        try:
-            wp.logger.log("probe/kappa", row.get("kappa", float("nan")), wp.step)
-            wp.logger.log("probe/rho", row.get("rho", float("nan")), wp.step)
-            wp.logger.log("probe/R_inner", row.get("R_inner", float("nan")), wp.step)
-            wp.logger.log("probe/g0_norm", row.get("g0_norm", float("nan")), wp.step)
-            wp.logger.log("probe/gperp_norm", row.get("gperp_norm", float("nan")), wp.step)
-            wp.logger.log("probe/ensemble_variance", row.get("ensemble_variance", float("nan")), wp.step)
-            wp.logger.log("probe/proxy_mean", row.get("proxy_mean", float("nan")), wp.step)
-            wp.logger.log("probe/gold_probe_eval", row.get("gold_eval", float("nan")), wp.step)
-            wp.logger.log("probe/kl_to_pretrain", float(kl), wp.step)
-        except Exception:
-            pass
+        # Push directly to wandb. The Workspace.Logger has an assertion that keys
+        # start with 'train' or 'eval' and a WANDB_SCALAR_ALLOWLIST, so we can't
+        # route probe metrics through it. wandb.log here goes to the global run
+        # initialized in train_PEBBLE.py when cfg.use_wandb=True.
+        if getattr(wp.cfg, "use_wandb", False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log({
+                        "probe/kappa": row.get("kappa", float("nan")),
+                        "probe/rho": row.get("rho", float("nan")),
+                        "probe/R_inner": row.get("R_inner", float("nan")),
+                        "probe/g0_norm": row.get("g0_norm", float("nan")),
+                        "probe/gperp_norm": row.get("gperp_norm", float("nan")),
+                        "probe/ensemble_variance": row.get("ensemble_variance", float("nan")),
+                        "probe/proxy_mean": row.get("proxy_mean", float("nan")),
+                        "probe/gold_eval": row.get("gold_eval", float("nan")),
+                        "probe/kl_to_pretrain": float(kl),
+                        "probe/policy_entropy": float(ent),
+                        "probe/refit_label_fallback": float(bool(row.get("refit_label_fallback", False))),
+                    }, step=int(wp.step))
+            except Exception:
+                pass
 
 
 def install_hooks(workspace) -> ProbeRecorder:

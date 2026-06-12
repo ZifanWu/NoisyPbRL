@@ -1,7 +1,0 @@
-capacity,regime,is_positive,is_capacity_limited,n_runs,frac_turned_over,turnover_reasons,mean_kappa,mean_R_inner
-full_rm,frequent_relabel,False,False,2,1,confirmed:2,1.37,0.467
-full_rm,rare_relabel,True,False,2,0,no_sustained_post_peak_drop:1;too_few_post_peak_points:1,2.09,0.433
-linear_rm,frequent_relabel,False,True,2,0.5,confirmed:1;too_few_post_peak_points:1,0.36,0.939
-linear_rm,rare_relabel,True,True,2,0,too_few_post_peak_points:2,0.412,0.923
-small_rm,frequent_relabel,False,True,2,0,peak_too_late:1;too_few_post_peak_points:1,0.387,1.12
-small_rm,rare_relabel,True,True,2,0,late_drop_too_small:1;too_few_post_peak_points:1,0.297,1
