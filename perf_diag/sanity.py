@@ -246,8 +246,8 @@ def check_refit_determinism(seed: int = 13) -> tuple[bool, float]:
         with torch.no_grad():
             for p in src[0].parameters():
                 p.copy_(torch.randn_like(p) * 0.1)
-        out = _probe._refit_psi_prime(src, (sa1, sa2), labels, K_refit=3, lr=1e-3, device=device)
-        return [p.detach().cpu().numpy().copy() for p in out[0].parameters()]
+        ens, _traj = _probe._refit_psi_prime(src, (sa1, sa2), labels, K_refit=3, lr=1e-3, device=device)
+        return [p.detach().cpu().numpy().copy() for p in ens[0].parameters()]
 
     a = do_refit()
     b = do_refit()

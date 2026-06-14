@@ -20,9 +20,9 @@ ensemble_size: 3
 max_feedback: 1400
 large_batch: 10
 label_margin: 0.0
-teacher_beta: -1
+teacher_beta: -1.0
 teacher_gamma: 1
-teacher_eps_mistake: 0
+teacher_eps_mistake: 0.0
 teacher_eps_skip: 0
 teacher_eps_equal: 0
 

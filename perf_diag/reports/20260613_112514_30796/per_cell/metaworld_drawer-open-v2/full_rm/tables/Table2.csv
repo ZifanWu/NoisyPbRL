@@ -1,0 +1,2 @@
+task,capacity,regime,is_positive,is_capacity_limited,n_runs,frac_turned_over,frac_goodhart,turnover_reasons,mean_kappa,mean_R_inner
+metaworld_drawer-open-v2,full_rm,rare_relabel,True,False,6,0,n/a,late_drop_too_small:2;too_few_post_peak_points:4,4.05,1.69

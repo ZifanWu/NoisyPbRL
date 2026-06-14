@@ -1,0 +1,2 @@
+task,capacity,regime,is_positive,is_capacity_limited,n_runs,frac_turned_over,frac_goodhart,turnover_reasons,mean_kappa,mean_R_inner
+walker_walk,small_rm,rare_relabel,True,True,6,0,n/a,late_drop_too_small:1;too_few_post_peak_points:5,0.287,0.969

@@ -1,0 +1,210 @@
+{
+  "runs": [
+    {
+      "run_name": "metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed0",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed0.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "full_rm",
+      "is_capacity_limited": false,
+      "rm_hidden_dim": 256,
+      "rm_num_layers": 3,
+      "rm_output_activation": "tanh",
+      "seed": 0,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed1",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed1.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "full_rm",
+      "is_capacity_limited": false,
+      "rm_hidden_dim": 256,
+      "rm_num_layers": 3,
+      "rm_output_activation": "tanh",
+      "seed": 1,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed2",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed2.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "full_rm",
+      "is_capacity_limited": false,
+      "rm_hidden_dim": 256,
+      "rm_num_layers": 3,
+      "rm_output_activation": "tanh",
+      "seed": 2,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed3",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed3.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "full_rm",
+      "is_capacity_limited": false,
+      "rm_hidden_dim": 256,
+      "rm_num_layers": 3,
+      "rm_output_activation": "tanh",
+      "seed": 3,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed4",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed4.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "full_rm",
+      "is_capacity_limited": false,
+      "rm_hidden_dim": 256,
+      "rm_num_layers": 3,
+      "rm_output_activation": "tanh",
+      "seed": 4,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed5",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__full_rm__rare_relabel__bt5__steps1M__seed5.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "full_rm",
+      "is_capacity_limited": false,
+      "rm_hidden_dim": 256,
+      "rm_num_layers": 3,
+      "rm_output_activation": "tanh",
+      "seed": 5,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed0",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed0.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "small_rm",
+      "is_capacity_limited": true,
+      "rm_hidden_dim": 16,
+      "rm_num_layers": 1,
+      "rm_output_activation": "tanh",
+      "seed": 0,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed1",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed1.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "small_rm",
+      "is_capacity_limited": true,
+      "rm_hidden_dim": 16,
+      "rm_num_layers": 1,
+      "rm_output_activation": "tanh",
+      "seed": 1,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed2",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed2.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "small_rm",
+      "is_capacity_limited": true,
+      "rm_hidden_dim": 16,
+      "rm_num_layers": 1,
+      "rm_output_activation": "tanh",
+      "seed": 2,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed3",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed3.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "small_rm",
+      "is_capacity_limited": true,
+      "rm_hidden_dim": 16,
+      "rm_num_layers": 1,
+      "rm_output_activation": "tanh",
+      "seed": 3,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed4",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed4.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "small_rm",
+      "is_capacity_limited": true,
+      "rm_hidden_dim": 16,
+      "rm_num_layers": 1,
+      "rm_output_activation": "tanh",
+      "seed": 4,
+      "is_positive": true,
+      "source": "this_submission"
+    },
+    {
+      "run_name": "metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed5",
+      "status": "completed",
+      "jsonl": "/uufs/chpc.utah.edu/common/home/u1520755/NoisyPbRL/perf_diag/runs/metaworld_drawer-open-v2__small_rm__rare_relabel__bt5__steps1M__seed5.jsonl",
+      "regime": "rare_relabel",
+      "task": "metaworld_drawer-open-v2",
+      "capacity": "small_rm",
+      "is_capacity_limited": true,
+      "rm_hidden_dim": 16,
+      "rm_num_layers": 1,
+      "rm_output_activation": "tanh",
+      "seed": 5,
+      "is_positive": true,
+      "source": "this_submission"
+    }
+  ],
+  "config": {
+    "quick": false,
+    "tasks": [
+      "metaworld_drawer-open-v2"
+    ],
+    "capacities": [
+      "full_rm",
+      "small_rm"
+    ],
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "regimes": [
+      "rare_relabel"
+    ],
+    "merge_previous": false
+  },
+  "neg_control_validity": {
+    "ok": true,
+    "bad": []
+  }
+}

@@ -79,6 +79,12 @@ PD_K_REFIT="${PD_K_REFIT:-5}"
 PD_REFIT_LR="${PD_REFIT_LR:-0.0003}"
 PD_PROBE_M="${PD_PROBE_M:-1}"
 PD_STEP_PROBE_EVERY="${PD_STEP_PROBE_EVERY:-10000}"
+# Phase 2: held-out on-policy preference pairs the probe evaluates each round.
+PD_N_HOLDOUT="${PD_N_HOLDOUT:-16}"
+# Phase 3: K-resample decomposition. PD_KRESAMPLE_EVERY=N triggers K independent refits
+# every N-th probe (vary only the refit-batch seed). 0 disables (default).
+PD_KRESAMPLE_EVERY="${PD_KRESAMPLE_EVERY:-0}"
+PD_KRESAMPLE_K="${PD_KRESAMPLE_K:-5}"
 
 # Filters (space-separated; empty = use defaults)
 ENVS="${ENVS:-walker_walk}"
@@ -86,6 +92,8 @@ SEEDS="${SEEDS:-0 1 2 3 4 5}"
 CAPACITIES="${CAPACITIES:-full_rm small_rm}"
 REGIMES="${REGIMES:-rare_relabel frequent_relabel}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
+
+# relabel freq x rm capacity x teacher type x env
 
 case "$PARTITION" in
     dbrown-gpu-grn)
@@ -162,7 +170,8 @@ N_TRAIN="$("$PYTHON" - \
     "$NUM_TRAIN_STEPS" "$NUM_SEED_STEPS" "$NUM_UNSUP_STEPS" "$EVAL_FREQUENCY" \
     "$SEGMENT" "$ENSEMBLE_SIZE" "$TEACHER_EPS_MISTAKE" "$TEACHER_BETA" "$REWARD_UPDATE" \
     "$PD_N_PROBE" "$PD_SEGMENT_LEN" "$PD_REFIT_PAIRS" "$PD_K_REFIT" "$PD_REFIT_LR" "$PD_PROBE_M" "$PD_STEP_PROBE_EVERY" \
-    "$TRAIN_MANIFEST_JSON" "$TRAIN_MANIFEST_CSV" "$UNLIMITED_BUDGET" "$UNLIMITED_BUDGET_VAL" <<'PY'
+    "$TRAIN_MANIFEST_JSON" "$TRAIN_MANIFEST_CSV" "$UNLIMITED_BUDGET" "$UNLIMITED_BUDGET_VAL" \
+    "$PD_N_HOLDOUT" "$PD_KRESAMPLE_EVERY" "$PD_KRESAMPLE_K" <<'PY'
 import csv
 import json
 import shlex
@@ -186,7 +195,7 @@ eval_frequency = int(sys.argv[13])
 segment = int(sys.argv[14])
 ensemble_size = int(sys.argv[15])
 teacher_eps_mistake = float(sys.argv[16])
-teacher_beta = int(sys.argv[17])
+teacher_beta = float(sys.argv[17])
 reward_update = int(sys.argv[18])
 
 pd_n_probe = int(sys.argv[19])
@@ -201,6 +210,9 @@ train_manifest_json = Path(sys.argv[26])
 train_manifest_csv = Path(sys.argv[27])
 unlimited_budget = sys.argv[28].lower() in {"1", "true", "yes", "y", "on"}
 unlimited_budget_val = int(sys.argv[29])
+pd_n_holdout = int(sys.argv[30])
+pd_kresample_every = int(sys.argv[31])
+pd_kresample_k = int(sys.argv[32])
 
 sys.path.insert(0, str(repo_dir))
 from perf_diag.run import TASK_DEFAULTS, task_central_P, task_overrides, RegimeCfg
@@ -269,6 +281,20 @@ def dedupe_cli_overrides(parts):
 
 
 cells = []
+# Encode teacher config in filenames so cross-teacher sweeps don't collide
+# (SKIP_DONE uses filename matching). Convention:
+#   - eps_mistake > 0  ⇒ "eps{eps_mistake}"  (uniform mistake teacher)
+#   - beta > 0         ⇒ "bt{beta}"           (Bradley-Terry stochastic teacher)
+#   - both 0           ⇒ "rational"
+def _teacher_tag(beta: float, eps: float) -> str:
+    if eps and eps > 0:
+        return f"eps{eps:g}"
+    if beta and beta > 0:
+        return f"bt{beta:g}"
+    return "rational"
+
+teacher_tag = _teacher_tag(float(teacher_beta), float(teacher_eps_mistake))
+
 capacities = capacity_cfgs(capacity_names)
 for task in envs:
     overrides_per_task = task_overrides(task)
@@ -284,8 +310,15 @@ for task in envs:
     for cap in capacities:
         for regime in regimes_for_task(task):
             for seed in seeds:
-                run_name = f"{task}__{cap['capacity']}__{regime.name}__seed{seed}"
-                run_dir = results_dir / task / cap["capacity"] / regime.name / f"seed{seed}"
+                # Compact step tag (1000 → "1k", 500000 → "500k", 1000000 → "1M").
+                if num_train_steps >= 1_000_000 and num_train_steps % 1_000_000 == 0:
+                    steps_tag = f"{num_train_steps // 1_000_000}M"
+                elif num_train_steps >= 1000 and num_train_steps % 1000 == 0:
+                    steps_tag = f"{num_train_steps // 1000}k"
+                else:
+                    steps_tag = str(num_train_steps)
+                run_name = f"{task}__{cap['capacity']}__{regime.name}__{teacher_tag}__steps{steps_tag}__seed{seed}"
+                run_dir = results_dir / task / cap["capacity"] / regime.name / teacher_tag / f"steps{steps_tag}" / f"seed{seed}"
                 jsonl_path = pd_out_dir / f"{run_name}.jsonl"
                 cli = [
                     "__PYTHON_BIN__", "train_PEBBLE.py",
@@ -324,6 +357,10 @@ for task in envs:
                     "regime": regime.name,
                     "is_positive": bool(regime.is_positive),
                     "seed": int(seed),
+                    "teacher_tag": teacher_tag,
+                    "teacher_beta": float(teacher_beta),
+                    "teacher_eps_mistake": float(teacher_eps_mistake),
+                    "num_train_steps": int(num_train_steps),
                     "max_feedback": int(max_feedback),
                     "num_interact": int(regime.num_interact),
                     "run_name": run_name,
@@ -342,6 +379,9 @@ for task in envs:
                         "PD_REFIT_LR": str(pd_refit_lr),
                         "PD_PROBE_M": str(pd_probe_m),
                         "PD_STEP_PROBE_EVERY": str(pd_step_probe_every),
+                        "PD_N_HOLDOUT": str(pd_n_holdout),
+                        "PD_KRESAMPLE_EVERY": str(pd_kresample_every),
+                        "PD_KRESAMPLE_K": str(pd_kresample_k),
                         "PD_OUT_DIR": str(pd_out_dir),
                     },
                 })
@@ -389,8 +429,12 @@ TRAIN_ARRAY_SPEC="$(array_spec "$N_TRAIN" "$MAX_CONCURRENT")"
 
 TRAIN_JOB_NAME="perf_diag_train"
 ANALYSIS_JOB_NAME="perf_diag_analysis"
-TMP_TRAIN_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${TRAIN_JOB_NAME}_XXXXXX")"
-TMP_ANALYSIS_SCRIPT="$(mktemp "${SCRIPT_DIR}/tmp_${ANALYSIS_JOB_NAME}_XXXXXX")"
+# Stage SLURM submission scripts in /tmp (not in repo root). SLURM copies them to its
+# own spool at sbatch time so they're safe to delete once submitted, and we don't
+# pollute the working tree. Add a trap so they're cleaned up on exit / dry-run failure.
+TMP_DIR="${TMP_DIR:-/tmp}"
+TMP_TRAIN_SCRIPT="$(mktemp "${TMP_DIR}/tmp_${TRAIN_JOB_NAME}_XXXXXX.sh")"
+TMP_ANALYSIS_SCRIPT="$(mktemp "${TMP_DIR}/tmp_${ANALYSIS_JOB_NAME}_XXXXXX.sh")"
 
 # ==============================================================
 # Per-cell training array script.
@@ -724,6 +768,7 @@ echo "  run analysis     : $RUN_ANALYSIS"
 echo "  merge previous   : $MERGE_PREVIOUS  (combined report scans all $PD_OUT_DIR/*.jsonl)"
 echo "  extra overrides  : ${EXTRA_OVERRIDES:-<none>}"
 echo "  probe knobs      : N_PROBE=$PD_N_PROBE  SEGMENT_LEN=$PD_SEGMENT_LEN  REFIT_PAIRS=$PD_REFIT_PAIRS  K_REFIT=$PD_K_REFIT  PROBE_M=$PD_PROBE_M  STEP_PROBE_EVERY=$PD_STEP_PROBE_EVERY"
+echo "  phase 2 / 3      : N_HOLDOUT=$PD_N_HOLDOUT  KRESAMPLE_EVERY=$PD_KRESAMPLE_EVERY  KRESAMPLE_K=$PD_KRESAMPLE_K"
 echo ""
 
 if [ "$DRY_RUN" = "true" ]; then

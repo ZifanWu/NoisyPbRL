@@ -1,0 +1,7 @@
+task,capacity,signal,lead_at_far=0.1,ci_lo,ci_hi,n_pos,n_neg
+metaworld_drawer-open-v2,small_rm,R_hat,nan,nan,nan,6,0
+metaworld_drawer-open-v2,small_rm,kappa,nan,nan,nan,6,0
+metaworld_drawer-open-v2,small_rm,proxy_inflection,nan,nan,nan,6,0
+metaworld_drawer-open-v2,small_rm,kl_to_pretrain,nan,nan,nan,6,0
+metaworld_drawer-open-v2,small_rm,entropy_drop,nan,nan,nan,6,0
+metaworld_drawer-open-v2,small_rm,ensemble_var,nan,nan,nan,6,0

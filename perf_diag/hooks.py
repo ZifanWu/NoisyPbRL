@@ -38,6 +38,14 @@ _CFG_DEFAULTS = dict(
     PD_PROBE_M="1",        # fire every M relabels
     PD_STEP_PROBE_EVERY="0",  # additionally probe every N env steps; 0 disables
     PD_GOLD_EVAL_EPISODES="3",  # number of episodes to average for gold eval
+    # Phase 2: number of fresh on-policy pairs held out from the refit batch each probe.
+    # The current RM's accuracy on these is logged as heldout_acc_onpolicy.
+    PD_N_HOLDOUT="16",
+    # Phase 3: K-resample decomposition cadence. Every N-th probe runs K independent
+    # refits (vary only the refit-batch seed) to separate systematic from variance.
+    # PD_KRESAMPLE_EVERY=0 disables (default). PD_KRESAMPLE_K is the resample count.
+    PD_KRESAMPLE_EVERY="0",
+    PD_KRESAMPLE_K="5",
     PD_OUT_DIR=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"),
     PD_RUN_NAME="default",
     PD_TAG_POSITIVE="positive",   # "positive" or "negative_control"
@@ -110,6 +118,10 @@ class ProbeRecorder:
         self._t0 = time.time()
         self._pretrain_actor_state = None
         self._last_probe_step = -1
+        # Env step at the most recent FULL relabel (i.e. when replay_buffer.relabel_with_predictor
+        # was called, not just the probe's tiny refit). Used to compute steps_since_relabel,
+        # which lets analysis extract κ̂₀ (low-staleness regime) per-(capacity, budget) cell.
+        self._last_full_relabel_step = None
         # Latest eval values we shadow from the Workspace.evaluate() return path
         self._last_eval = dict(true_episode_reward=float("nan"),
                                episode_reward=float("nan"),
@@ -263,6 +275,9 @@ class ProbeRecorder:
 
     def _on_relabel(self):
         wp = self.workspace
+        # Stamp this as the most recent full relabel BEFORE deciding whether to probe.
+        # We still want non-probed relabels to reset steps_since_relabel for later probes.
+        self._last_full_relabel_step = int(getattr(wp, "step", 0))
         if int(_cfg("PD_ENABLE")) == 0:
             return
         # Probe only every PD_PROBE_M relabels
@@ -309,6 +324,12 @@ class ProbeRecorder:
             except Exception as exc:
                 raise RuntimeError(f"probe env_factory failed: {exc}")
 
+        # Phase 3 K-resample cadence: enabled only when PD_KRESAMPLE_EVERY > 0 and this
+        # is the right probe index. Use relabel_idx so cadence is stable across runs.
+        kresample_every = int(_cfg("PD_KRESAMPLE_EVERY"))
+        kresample_K = int(_cfg("PD_KRESAMPLE_K"))
+        do_kresample = (kresample_every > 0 and kresample_K > 1
+                        and (self.relabel_idx % kresample_every == 0))
         try:
             probe_seed = (int(getattr(wp.cfg, "seed", 0)) * 100003
                           + int(self.relabel_idx) * 997
@@ -324,16 +345,25 @@ class ProbeRecorder:
                 refit_lr=float(_cfg("PD_REFIT_LR")),
                 probe_seed=probe_seed,
                 device=wp.device,
+                kresample_K=kresample_K if do_kresample else 0,
+                n_holdout=int(_cfg("PD_N_HOLDOUT")),
             )
         except Exception as exc:
             probe_out = dict(error=str(exc))
 
         kl, ent = self._kl_to_pretrain_and_entropy()
         gold_now = self._evaluate_gold_now()
+        # Staleness vs variance decomposition: steps_since_relabel ≈ 0 marks the κ̂₀
+        # regime (variance only). NaN before the first full relabel.
+        if self._last_full_relabel_step is None:
+            steps_since_relabel = float("nan")
+        else:
+            steps_since_relabel = float(int(wp.step) - int(self._last_full_relabel_step))
         row = dict(
             event=str(event),
             relabel_idx=int(self.relabel_idx),
             step=int(wp.step),
+            steps_since_relabel=steps_since_relabel,
             wall=time.time() - self._t0,
             gold_eval=float(gold_now),
             kl_to_pretrain=float(kl),
@@ -351,7 +381,7 @@ class ProbeRecorder:
             try:
                 import wandb
                 if wandb.run is not None:
-                    wandb.log({
+                    payload = {
                         "probe/kappa": row.get("kappa", float("nan")),
                         "probe/rho": row.get("rho", float("nan")),
                         "probe/R_inner": row.get("R_inner", float("nan")),
@@ -363,7 +393,31 @@ class ProbeRecorder:
                         "probe/kl_to_pretrain": float(kl),
                         "probe/policy_entropy": float(ent),
                         "probe/refit_label_fallback": float(bool(row.get("refit_label_fallback", False))),
-                    }, step=int(wp.step))
+                        "probe/steps_since_relabel": row.get("steps_since_relabel", float("nan")),
+                        # Per-refit-step trajectory endpoints (cumulative norm/loss at K_refit step K).
+                        # The full trajectory_k arrays go to JSONL only; here we log scalars for live charts.
+                        "refit/param_step_norm_final": row.get("refit_param_step_norm_final", float("nan")),
+                        "refit/loss_decrement_final": row.get("refit_loss_decrement_final", float("nan")),
+                        # Phase 2 (corrected): held-out accuracy of the LIVE RM.
+                        # Primary = vs GOLD label (comparable across teachers).
+                        # Legacy = vs TEACHER noisy label (kept; gap = fitting noise).
+                        "rm/heldout_acc_vs_gold": row.get("heldout_acc_gold", float("nan")),
+                        "rm/heldout_acc_vs_teacher": row.get("heldout_acc_teacher", float("nan")),
+                        "rm/heldout_n_gold": row.get("heldout_n_gold", 0),
+                        "rm/heldout_n_teacher": row.get("heldout_n_teacher", 0),
+                        "rm/heldout_acc_onpolicy": row.get("heldout_acc_onpolicy", float("nan")),  # backward-compat
+                        # Teacher's empirical disagreement with gold on this probe's
+                        # refit batch — used to match noise level across teachers (§1).
+                        "teacher/disagreement_with_gold": row.get("teacher_gold_disagreement", float("nan")),
+                    }
+                    # Phase 3: K-resample decomposition fields (only emitted when do_kresample).
+                    for kr_key in ("kresample_K", "kresample_systematic_norm",
+                                   "kresample_scatter_norm", "kresample_pairwise_cos",
+                                   "kresample_ortho_cos_max", "kresample_ortho_cos_mean",
+                                   "kresample_total_sq_mean", "kresample_decomp_sq_sum"):
+                        if kr_key in row:
+                            payload[f"decomp/{kr_key[len('kresample_'):]}"] = row[kr_key]
+                    wandb.log(payload, step=int(wp.step))
             except Exception:
                 pass
 
